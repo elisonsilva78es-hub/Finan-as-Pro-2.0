@@ -30,9 +30,11 @@ import {
 } from './lib/authService';
 import { AuthModal } from './components/AuthModal';
 import { PassphraseModal } from './components/PassphraseModal';
+import { ImportModal } from './components/ImportModal';
 import { 
   createExportPackage, 
-  parseImportedFinancialData 
+  parseImportedFinancialData,
+  findLegacyBrowserData 
 } from './lib/dataSync';
 import { 
   getOrCreateUserProfile, 
@@ -79,6 +81,8 @@ export default function App() {
   const [editingId, setEditingId] = useState<number | null>(null);
   const [whatsappCode, setWhatsappCode] = useState('');
   const [toastMessage, setToastMessage] = useState<string | null>(null);
+  const [showImportModal, setShowImportModal] = useState(false);
+  const [legacyBackupsFound, setLegacyBackupsFound] = useState<Array<{ key: string; label: string; data: MonthlyFinancialData; totalItens: number }>>([]);
 
   // Drag and drop state
   const [draggedIndex, setDraggedIndex] = useState<number | null>(null);
@@ -350,29 +354,51 @@ export default function App() {
     const pkg = createExportPackage(dados, selectedMonth, selectedYear);
     try {
       await navigator.clipboard.writeText(pkg.code);
-      showToast('✅ Código de exportação copiado! Cole no campo "Importar Dados".');
+      showToast('✅ Código copiado! Cole no campo e clique em "Carregar Dados".');
     } catch {
       setWhatsappCode(pkg.code);
-      showToast('Código inserido no campo abaixo para você copiar.');
+      showToast('Código inserido no campo para você carregar.');
     }
   };
 
-  const carregarDadosWhatsApp = () => {
-    if (!whatsappCode || !whatsappCode.trim()) {
-      showToast('Por favor, cole o código ou mensagem copiada no campo de texto.');
+  const carregarDadosWhatsApp = async () => {
+    let codeToParse = whatsappCode?.trim();
+
+    // If input is empty, try to auto-read from clipboard as a convenience
+    if (!codeToParse) {
+      try {
+        const clip = await navigator.clipboard.readText();
+        if (clip && clip.trim()) {
+          codeToParse = clip.trim();
+          setWhatsappCode(codeToParse);
+        }
+      } catch {}
+    }
+
+    if (!codeToParse) {
+      showToast('Por favor, cole os dados no campo e clique em "Carregar Dados".');
+      setShowImportModal(true);
       return;
     }
 
-    const result = parseImportedFinancialData(whatsappCode);
+    const result = parseImportedFinancialData(codeToParse);
     if (result.success && result.data) {
       persistData(result.data);
       setWhatsappCode('');
       confetti({ particleCount: 75, spread: 75, origin: { y: 0.7 } });
       const total = result.summary?.totalItens ?? 0;
-      showToast(`✅ Sucesso! ${total} itens importados e salvos para ${selectedMonth}/${selectedYear}!`);
+      showToast(`✅ Sucesso! ${total} itens carregados e salvos para ${selectedMonth}/${selectedYear}!`);
     } else {
-      showToast(result.error || 'Código inválido ou corrompido. Verifique o texto copiado.');
+      showToast(result.error || 'Código inválido. Abrindo assistente de carregamento...');
+      setShowImportModal(true);
     }
+  };
+
+  const handleImportFromModal = (importedData: MonthlyFinancialData, detectedPeriod?: string) => {
+    persistData(importedData);
+    confetti({ particleCount: 85, spread: 80, origin: { y: 0.7 } });
+    const count = (importedData.rendas?.length || 0) + (importedData.despesas?.length || 0) + (importedData.economias?.length || 0);
+    showToast(`✅ Sucesso! ${count} registros carregados com êxito!`);
   };
 
   // Calculations
@@ -593,19 +619,42 @@ export default function App() {
             <div className={`p-4 rounded-3xl border shadow-sm ${theme === 'dark' ? 'bg-slate-900/70 border-slate-800' : 'bg-white border-slate-200'}`}>
               <div className="flex items-center justify-between mb-2.5">
                 <span className="text-xs font-bold uppercase tracking-wider text-slate-400">
-                  Exportar e Importar Dados
+                  Exportar e Carregar Dados
                 </span>
                 <span className="text-[10px] text-slate-400 font-medium">
                   Mês: {selectedMonth}/{selectedYear}
                 </span>
               </div>
 
+              {/* Automatic detection banner for legacy data in this browser */}
+              {legacyBackupsFound.length > 0 && (
+                <div className="p-3 mb-3 rounded-2xl bg-emerald-500/10 border border-emerald-500/30 flex items-center justify-between text-xs animate-fade-in">
+                  <div className="flex items-center gap-2 text-emerald-400">
+                    <Sparkles className="w-4 h-4 shrink-0" />
+                    <span>
+                      Encontramos {legacyBackupsFound[0].totalItens} dados da versão anterior neste dispositivo!
+                    </span>
+                  </div>
+                  <button
+                    type="button"
+                    onClick={() => {
+                      persistData(legacyBackupsFound[0].data);
+                      confetti({ particleCount: 75, spread: 70, origin: { y: 0.7 } });
+                      showToast('✅ Dados da versão anterior carregados com sucesso!');
+                    }}
+                    className="px-3 py-1.5 rounded-xl bg-emerald-600 hover:bg-emerald-500 text-white font-bold text-[11px] transition-all cursor-pointer shrink-0 ml-2 active:scale-95 shadow-sm"
+                  >
+                    Carregar
+                  </button>
+                </div>
+              )}
+
               {/* Action buttons */}
-              <div className="flex gap-2 mb-3">
+              <div className="grid grid-cols-3 gap-2 mb-3">
                 <button
                   type="button"
                   onClick={compartilharWhatsAppDados}
-                  className="flex-1 py-2.5 px-3 rounded-xl bg-emerald-600 hover:bg-emerald-500 text-white font-semibold text-xs flex items-center justify-center gap-1.5 transition-all shadow-sm active:scale-95 cursor-pointer"
+                  className="py-2.5 px-2 rounded-xl bg-emerald-600 hover:bg-emerald-500 text-white font-semibold text-xs flex items-center justify-center gap-1.5 transition-all shadow-sm active:scale-95 cursor-pointer"
                   title="Compartilhar pelo WhatsApp"
                 >
                   <Share2 className="w-3.5 h-3.5" />
@@ -615,38 +664,75 @@ export default function App() {
                 <button
                   type="button"
                   onClick={copiarCodigoExportacao}
-                  className="flex-1 py-2.5 px-3 rounded-xl bg-blue-600 hover:bg-blue-500 text-white font-semibold text-xs flex items-center justify-center gap-1.5 transition-all shadow-sm active:scale-95 cursor-pointer"
+                  className="py-2.5 px-2 rounded-xl bg-blue-600 hover:bg-blue-500 text-white font-semibold text-xs flex items-center justify-center gap-1.5 transition-all shadow-sm active:scale-95 cursor-pointer"
                   title="Copiar código de backup direto para a área de transferência"
                 >
                   <Copy className="w-3.5 h-3.5" />
                   <span>Copiar Código</span>
+                </button>
+
+                <button
+                  type="button"
+                  onClick={() => setShowImportModal(true)}
+                  className="py-2.5 px-2 rounded-xl bg-indigo-600 hover:bg-indigo-500 text-white font-semibold text-xs flex items-center justify-center gap-1.5 transition-all shadow-sm active:scale-95 cursor-pointer"
+                  title="Abrir Assistente com detecção automática e suporte à área de transferência"
+                >
+                  <Download className="w-3.5 h-3.5" />
+                  <span>Assistente</span>
                 </button>
               </div>
 
               {/* Import input and button */}
               <div className="space-y-1.5">
                 <div className="flex gap-2">
-                  <input
-                    type="text"
-                    value={whatsappCode}
-                    onChange={(e) => setWhatsappCode(e.target.value)}
-                    placeholder="Cole aqui o código ou mensagem copiada..."
-                    className={`flex-1 text-xs px-3.5 py-2.5 rounded-xl border focus:outline-none focus:ring-2 focus:ring-blue-500 transition-all ${
-                      theme === 'dark' ? 'bg-slate-950 border-slate-700 text-white placeholder-slate-500' : 'bg-slate-50 border-slate-200 text-slate-900 placeholder-slate-400'
-                    }`}
-                  />
+                  <div className="relative flex-1 flex items-center">
+                    <input
+                      type="text"
+                      value={whatsappCode}
+                      onChange={(e) => setWhatsappCode(e.target.value)}
+                      onPaste={(e) => {
+                        const pasted = e.clipboardData.getData('text');
+                        if (pasted) {
+                          e.preventDefault();
+                          setWhatsappCode(pasted);
+                        }
+                      }}
+                      placeholder="Cole aqui o código ou mensagem copiada..."
+                      className={`w-full text-xs pl-3.5 pr-8 py-2.5 rounded-xl border focus:outline-none focus:ring-2 focus:ring-blue-500 transition-all ${
+                        theme === 'dark' ? 'bg-slate-950 border-slate-700 text-white placeholder-slate-500' : 'bg-slate-50 border-slate-200 text-slate-900 placeholder-slate-400'
+                      }`}
+                    />
+                    {whatsappCode && (
+                      <button
+                        type="button"
+                        onClick={() => setWhatsappCode('')}
+                        className="absolute right-2 text-slate-400 hover:text-white text-xs p-1"
+                        title="Limpar"
+                      >
+                        ✕
+                      </button>
+                    )}
+                  </div>
                   <button
                     type="button"
                     onClick={carregarDadosWhatsApp}
-                    className="px-4 py-2.5 rounded-xl bg-slate-800 hover:bg-slate-700 text-white text-xs font-bold transition-all shrink-0 active:scale-95 cursor-pointer flex items-center gap-1.5 shadow-sm"
+                    className="px-4 py-2.5 rounded-xl bg-blue-600 hover:bg-blue-500 text-white text-xs font-bold transition-all shrink-0 active:scale-95 cursor-pointer flex items-center gap-1.5 shadow-md shadow-blue-500/20"
+                    title="Carregar os dados colados para a planilha"
                   >
                     <Download className="w-3.5 h-3.5" />
-                    <span>Importar Dados</span>
+                    <span>Carregar Dados</span>
                   </button>
                 </div>
-                <p className="text-[10px] text-slate-400 leading-tight">
-                  💡 Aceita o código completo, a mensagem do WhatsApp ou JSON diretamente.
-                </p>
+                <div className="flex items-center justify-between text-[10px] text-slate-400 pt-0.5">
+                  <span>💡 Cole o código ou mensagem e clique em <strong>Carregar Dados</strong>.</span>
+                  <button
+                    type="button"
+                    onClick={() => setShowImportModal(true)}
+                    className="text-blue-400 hover:text-blue-300 underline font-medium cursor-pointer"
+                  >
+                    Abrir Assistente Completo
+                  </button>
+                </div>
               </div>
             </div>
 
@@ -1087,6 +1173,15 @@ export default function App() {
           </button>
         </div>
       </nav>
+
+      {/* Universal Import Assistant Modal */}
+      <ImportModal
+        isOpen={showImportModal}
+        onClose={() => setShowImportModal(false)}
+        onImport={handleImportFromModal}
+        currentMonth={selectedMonth}
+        currentYear={selectedYear}
+      />
     </div>
   );
 }
