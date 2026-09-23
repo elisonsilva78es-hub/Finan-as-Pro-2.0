@@ -19,7 +19,8 @@ import {
   CloudCheck, 
   RefreshCw, 
   Info,
-  KeyRound
+  KeyRound,
+  Copy
 } from 'lucide-react';
 import confetti from 'canvas-confetti';
 import { 
@@ -29,6 +30,10 @@ import {
 } from './lib/authService';
 import { AuthModal } from './components/AuthModal';
 import { PassphraseModal } from './components/PassphraseModal';
+import { 
+  createExportPackage, 
+  parseImportedFinancialData 
+} from './lib/dataSync';
 import { 
   getOrCreateUserProfile, 
   initializeUserSecurity, 
@@ -323,41 +328,50 @@ export default function App() {
 
   // Export / WhatsApp integration
   const compartilharWhatsAppDados = () => {
-    const payload = JSON.stringify({
-      version: '2.0',
-      period: periodKey,
-      data: dados
-    });
-    const textoDados = btoa(unescape(encodeURIComponent(payload)));
-    const mensagem = `Olá! Aqui estão os dados exportados do aplicativo 👑 Finanças Pro 2.0 (Período: ${selectedMonth}/${selectedYear}).\n\nPara importar no seu dispositivo, copie todo o código abaixo e cole no campo de importação do app:\n\n[DADOS_INICIO]${textoDados}[DADOS_FIM]`;
-    const url = `https://api.whatsapp.com/send?text=${encodeURIComponent(mensagem)}`;
-    window.open(url, '_blank');
+    const pkg = createExportPackage(dados, selectedMonth, selectedYear);
+    
+    // Automatically copy the formatted message to clipboard as well
+    try {
+      navigator.clipboard.writeText(pkg.whatsappMessage);
+    } catch {
+      // clipboard fallback
+    }
+
+    const url = `https://api.whatsapp.com/send?text=${encodeURIComponent(pkg.whatsappMessage)}`;
+    try {
+      window.open(url, '_blank');
+      showToast('Mensagem enviada para o WhatsApp e copiada para a área de transferência!');
+    } catch {
+      showToast('Código de exportação copiado para a área de transferência!');
+    }
+  };
+
+  const copiarCodigoExportacao = async () => {
+    const pkg = createExportPackage(dados, selectedMonth, selectedYear);
+    try {
+      await navigator.clipboard.writeText(pkg.code);
+      showToast('✅ Código de exportação copiado! Cole no campo "Importar Dados".');
+    } catch {
+      setWhatsappCode(pkg.code);
+      showToast('Código inserido no campo abaixo para você copiar.');
+    }
   };
 
   const carregarDadosWhatsApp = () => {
-    if (!whatsappCode.trim()) {
-      showToast('Por favor, cole o código recebido no WhatsApp.');
+    if (!whatsappCode || !whatsappCode.trim()) {
+      showToast('Por favor, cole o código ou mensagem copiada no campo de texto.');
       return;
     }
 
-    try {
-      let raw = whatsappCode.trim();
-      if (raw.includes('[DADOS_INICIO]') && raw.includes('[DADOS_FIM]')) {
-        raw = raw.split('[DADOS_INICIO]')[1].split('[DADOS_FIM]')[0].trim();
-      }
-
-      const decoded = JSON.parse(decodeURIComponent(escape(atob(raw))));
-      if (decoded && decoded.data) {
-        if (confirm('Deseja mesclar ou substituir os dados deste período com o código importado?')) {
-          persistData(decoded.data);
-          setWhatsappCode('');
-          showToast('Dados importados e salvos com sucesso!');
-        }
-      } else {
-        throw new Error('Formato inválido');
-      }
-    } catch (e) {
-      showToast('Código inválido ou corrompido. Verifique o texto copiado.');
+    const result = parseImportedFinancialData(whatsappCode);
+    if (result.success && result.data) {
+      persistData(result.data);
+      setWhatsappCode('');
+      confetti({ particleCount: 75, spread: 75, origin: { y: 0.7 } });
+      const total = result.summary?.totalItens ?? 0;
+      showToast(`✅ Sucesso! ${total} itens importados e salvos para ${selectedMonth}/${selectedYear}!`);
+    } else {
+      showToast(result.error || 'Código inválido ou corrompido. Verifique o texto copiado.');
     }
   };
 
@@ -577,35 +591,62 @@ export default function App() {
           <div className="space-y-4 animate-fade-in">
             {/* WhatsApp Export & Sync Box */}
             <div className={`p-4 rounded-3xl border shadow-sm ${theme === 'dark' ? 'bg-slate-900/70 border-slate-800' : 'bg-white border-slate-200'}`}>
+              <div className="flex items-center justify-between mb-2.5">
+                <span className="text-xs font-bold uppercase tracking-wider text-slate-400">
+                  Exportar e Importar Dados
+                </span>
+                <span className="text-[10px] text-slate-400 font-medium">
+                  Mês: {selectedMonth}/{selectedYear}
+                </span>
+              </div>
+
+              {/* Action buttons */}
               <div className="flex gap-2 mb-3">
                 <button
                   type="button"
                   onClick={compartilharWhatsAppDados}
-                  className="flex-1 py-2.5 px-3 rounded-xl bg-emerald-600 hover:bg-emerald-500 text-white font-semibold text-xs flex items-center justify-center gap-1.5 transition-all shadow-sm active:scale-95"
+                  className="flex-1 py-2.5 px-3 rounded-xl bg-emerald-600 hover:bg-emerald-500 text-white font-semibold text-xs flex items-center justify-center gap-1.5 transition-all shadow-sm active:scale-95 cursor-pointer"
+                  title="Compartilhar pelo WhatsApp"
                 >
                   <Share2 className="w-3.5 h-3.5" />
-                  <span>Compartilhar WhatsApp</span>
+                  <span>WhatsApp</span>
+                </button>
+
+                <button
+                  type="button"
+                  onClick={copiarCodigoExportacao}
+                  className="flex-1 py-2.5 px-3 rounded-xl bg-blue-600 hover:bg-blue-500 text-white font-semibold text-xs flex items-center justify-center gap-1.5 transition-all shadow-sm active:scale-95 cursor-pointer"
+                  title="Copiar código de backup direto para a área de transferência"
+                >
+                  <Copy className="w-3.5 h-3.5" />
+                  <span>Copiar Código</span>
                 </button>
               </div>
 
-              <div className="flex gap-2">
-                <input
-                  type="text"
-                  value={whatsappCode}
-                  onChange={(e) => setWhatsappCode(e.target.value)}
-                  placeholder="Cole aqui o código recebido no WhatsApp"
-                  className={`flex-1 text-xs px-3 py-2 rounded-xl border focus:outline-none focus:ring-1 focus:ring-emerald-500 ${
-                    theme === 'dark' ? 'bg-slate-950 border-slate-700 text-white' : 'bg-slate-50 border-slate-200 text-slate-900'
-                  }`}
-                />
-                <button
-                  type="button"
-                  onClick={carregarDadosWhatsApp}
-                  className="px-4 py-2 rounded-xl bg-slate-800 hover:bg-slate-700 text-white text-xs font-bold transition-all shrink-0 active:scale-95"
-                >
-                  <Download className="w-3.5 h-3.5 inline mr-1" />
-                  Importar
-                </button>
+              {/* Import input and button */}
+              <div className="space-y-1.5">
+                <div className="flex gap-2">
+                  <input
+                    type="text"
+                    value={whatsappCode}
+                    onChange={(e) => setWhatsappCode(e.target.value)}
+                    placeholder="Cole aqui o código ou mensagem copiada..."
+                    className={`flex-1 text-xs px-3.5 py-2.5 rounded-xl border focus:outline-none focus:ring-2 focus:ring-blue-500 transition-all ${
+                      theme === 'dark' ? 'bg-slate-950 border-slate-700 text-white placeholder-slate-500' : 'bg-slate-50 border-slate-200 text-slate-900 placeholder-slate-400'
+                    }`}
+                  />
+                  <button
+                    type="button"
+                    onClick={carregarDadosWhatsApp}
+                    className="px-4 py-2.5 rounded-xl bg-slate-800 hover:bg-slate-700 text-white text-xs font-bold transition-all shrink-0 active:scale-95 cursor-pointer flex items-center gap-1.5 shadow-sm"
+                  >
+                    <Download className="w-3.5 h-3.5" />
+                    <span>Importar Dados</span>
+                  </button>
+                </div>
+                <p className="text-[10px] text-slate-400 leading-tight">
+                  💡 Aceita o código completo, a mensagem do WhatsApp ou JSON diretamente.
+                </p>
               </div>
             </div>
 
