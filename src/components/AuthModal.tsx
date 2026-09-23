@@ -48,7 +48,7 @@ export const AuthModal: React.FC<AuthModalProps> = ({ onSuccess }) => {
 
   // Google quick-dialog modal state
   const [showGoogleCustomInput, setShowGoogleCustomInput] = useState(false);
-  const [customGoogleEmail, setCustomGoogleEmail] = useState('elison.silva78.ES@gmail.com');
+  const [customGoogleEmail, setCustomGoogleEmail] = useState('');
 
   const resetForm = () => {
     setError(null);
@@ -64,14 +64,21 @@ export const AuthModal: React.FC<AuthModalProps> = ({ onSuccess }) => {
     setError(null);
     setIsLoading(true);
     try {
-      const emailToUse = targetEmail || customGoogleEmail || 'elison.silva78.ES@gmail.com';
-      const user = await signInGoogle(emailToUse);
+      const user = await signInGoogle(targetEmail);
       if (user) {
         onSuccess(user);
       }
     } catch (err: any) {
       console.error('Google Sign-in Error:', err);
-      setError(err.message || 'Falha ao autenticar com Google. Tente novamente.');
+      if (err.code === 'auth/popup-blocked') {
+        setError('O navegador bloqueou a janela pop-up do Google. Por favor, permita pop-ups para este site ou utilize o campo abaixo.');
+        setShowGoogleCustomInput(true);
+      } else if (err.code === 'auth/popup-closed-by-user') {
+        setError('Login cancelado. Clique em "Continuar com e-mail do Google" para tentar novamente.');
+      } else {
+        setError(err.message || 'Falha ao autenticar com Google. Tente novamente.');
+        setShowGoogleCustomInput(true);
+      }
     } finally {
       setIsLoading(false);
     }
@@ -224,7 +231,7 @@ export const AuthModal: React.FC<AuthModalProps> = ({ onSuccess }) => {
                 <div className="space-y-2">
                   <button
                     type="button"
-                    onClick={() => handleGoogleSignIn('elison.silva78.ES@gmail.com')}
+                    onClick={() => handleGoogleSignIn()}
                     disabled={isLoading}
                     className="w-full flex items-center justify-center gap-3 py-3.5 px-4 bg-white hover:bg-slate-100 text-slate-900 font-semibold rounded-2xl transition-all shadow-md hover:shadow-lg active:scale-[0.98] disabled:opacity-60 cursor-pointer text-sm"
                   >
@@ -246,7 +253,7 @@ export const AuthModal: React.FC<AuthModalProps> = ({ onSuccess }) => {
                         d="M12 5.38c1.62 0 3.06.56 4.21 1.64l3.15-3.15C17.45 2.09 14.97 1 12 1 7.7 1 3.99 3.47 2.18 7.06l3.66 2.84c.87-2.6 3.3-4.52 6.16-4.52z"
                       />
                     </svg>
-                    <span>Continuar como elison.silva78.ES@gmail.com</span>
+                    <span>Continuar com e-mail do Google</span>
                   </button>
 
                   <div className="text-center">
@@ -255,7 +262,7 @@ export const AuthModal: React.FC<AuthModalProps> = ({ onSuccess }) => {
                       onClick={() => setShowGoogleCustomInput(true)}
                       className="text-[11px] text-blue-400 hover:text-blue-300 underline cursor-pointer"
                     >
-                      Entrar com outra conta Google
+                      Entrar informando e-mail Google
                     </button>
                   </div>
                 </div>

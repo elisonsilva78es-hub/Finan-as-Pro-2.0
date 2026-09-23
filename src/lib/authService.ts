@@ -1,4 +1,11 @@
 import { sha256, hashPasswordWithSalt, generateRandomSalt } from './crypto';
+import { auth } from './firebase';
+import { 
+  GoogleAuthProvider, 
+  signInWithPopup, 
+  signOut as fbSignOut, 
+  onAuthStateChanged 
+} from 'firebase/auth';
 
 export interface AppUser {
   uid: string;
@@ -26,6 +33,20 @@ const ACTIVE_SESSION_KEY = 'fin_active_user_session';
 type AuthSubscriber = (user: AppUser | null) => void;
 const subscribers: Set<AuthSubscriber> = new Set();
 
+// Listen to Firebase Auth state for automatic session sync
+onAuthStateChanged(auth, (fbUser) => {
+  if (fbUser) {
+    const appUser: AppUser = {
+      uid: fbUser.uid,
+      email: fbUser.email || '',
+      displayName: fbUser.displayName || fbUser.email?.split('@')[0] || 'Usuário Google',
+      photoURL: fbUser.photoURL || undefined,
+      provider: 'google',
+    };
+    setActiveUser(appUser);
+  }
+});
+
 function getStoredAccounts(): Record<string, StoredUserAccount> {
   try {
     const raw = localStorage.getItem(STORAGE_ACCOUNTS_KEY);
@@ -51,6 +72,17 @@ function notifySubscribers(user: AppUser | null) {
 
 // Get current active session
 export function getActiveUser(): AppUser | null {
+  // If Firebase Auth has a current user, prefer it
+  if (auth.currentUser) {
+    return {
+      uid: auth.currentUser.uid,
+      email: auth.currentUser.email || '',
+      displayName: auth.currentUser.displayName || auth.currentUser.email?.split('@')[0] || 'Usuário Google',
+      photoURL: auth.currentUser.photoURL || undefined,
+      provider: 'google',
+    };
+  }
+
   try {
     const raw = localStorage.getItem(ACTIVE_SESSION_KEY);
     return raw ? JSON.parse(raw) : null;
@@ -80,9 +112,34 @@ export function subscribeToAuth(callback: AuthSubscriber): () => void {
   };
 }
 
-// Google Sign In (Self-contained, secure, independent of Firebase Auth)
+// Google Sign In (Direct Firebase Auth with fallback)
 export async function signInGoogle(providedEmail?: string, providedName?: string): Promise<AppUser> {
-  const normalizedEmail = (providedEmail || 'elison.silva78.ES@gmail.com').trim().toLowerCase();
+  // If no email was manually provided, initiate real Google Sign-In popup with Firebase Auth
+  if (!providedEmail) {
+    try {
+      const provider = new GoogleAuthProvider();
+      provider.setCustomParameters({ prompt: 'select_account' });
+      const cred = await signInWithPopup(auth, provider);
+      const fbUser = cred.user;
+
+      const appUser: AppUser = {
+        uid: fbUser.uid,
+        email: fbUser.email || '',
+        displayName: fbUser.displayName || fbUser.email?.split('@')[0] || 'Usuário Google',
+        photoURL: fbUser.photoURL || undefined,
+        provider: 'google',
+      };
+
+      setActiveUser(appUser);
+      return appUser;
+    } catch (err: any) {
+      console.warn('Firebase Popup sign-in error:', err);
+      throw err;
+    }
+  }
+
+  // Fallback if user typed their Google email
+  const normalizedEmail = providedEmail.trim().toLowerCase();
   const displayName = providedName || normalizedEmail.split('@')[0] || 'Usuário Google';
   
   const accounts = getStoredAccounts();
@@ -92,7 +149,6 @@ export async function signInGoogle(providedEmail?: string, providedName?: string
     const hash = await sha256(normalizedEmail);
     const uid = `usr_g_${hash.substring(0, 16)}`;
     const salt = generateRandomSalt(16);
-    // Google account has an internal random recovery secret
     const recoveryPin = Math.floor(100000 + Math.random() * 900000).toString();
     const passwordHash = await hashPasswordWithSalt(`google_${uid}_oauth`, salt);
 
@@ -268,7 +324,12 @@ export async function resetPasswordWithPin(
 }
 
 // Logout
-export function logoutUser() {
+export async function logoutUser(): Promise<void> {
+  try {
+    await fbSignOut(auth);
+  } catch (e) {
+    console.error('Error signing out from Firebase:', e);
+  }
   setActiveUser(null);
 }
 

@@ -1,10 +1,12 @@
 import { initializeApp, getApps, getApp } from 'firebase/app';
 import { getFirestore, doc, getDocFromServer } from 'firebase/firestore';
+import { getAuth } from 'firebase/auth';
 import firebaseConfig from '../../firebase-applet-config.json';
 
-// Initialize Firebase App for Firestore (Firebase Auth completely removed as requested)
+// Initialize Firebase App for Firestore and Auth
 const app = getApps().length > 0 ? getApp() : initializeApp(firebaseConfig);
 export const db = getFirestore(app, firebaseConfig.firestoreDatabaseId || '(default)');
+export const auth = getAuth(app);
 
 // Test connection on load
 export async function testFirebaseConnection(): Promise<boolean> {

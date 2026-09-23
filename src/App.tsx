@@ -20,7 +20,8 @@ import {
   RefreshCw, 
   Info,
   KeyRound,
-  Copy
+  Copy,
+  ArrowUpDown
 } from 'lucide-react';
 import confetti from 'canvas-confetti';
 import { 
@@ -31,6 +32,7 @@ import {
 import { AuthModal } from './components/AuthModal';
 import { PassphraseModal } from './components/PassphraseModal';
 import { ImportModal } from './components/ImportModal';
+import { DataTransferModal } from './components/DataTransferModal';
 import { 
   createExportPackage, 
   parseImportedFinancialData,
@@ -41,7 +43,8 @@ import {
   initializeUserSecurity, 
   unlockUserVault, 
   saveEncryptedMonthlyData, 
-  loadEncryptedMonthlyData 
+  loadEncryptedMonthlyData,
+  syncLocalRecordsToCloud
 } from './lib/storage';
 import type { 
   FinancialItem, 
@@ -57,6 +60,7 @@ export default function App() {
   const [isNewUser, setIsNewUser] = useState(false);
   const [cryptoKey, setCryptoKey] = useState<CryptoKey | null>(null);
   const [showPassphraseModal, setShowPassphraseModal] = useState(false);
+  const [showDataTransferModal, setShowDataTransferModal] = useState(false);
   
   // Theme & Period state
   const [theme, setTheme] = useState<'light' | 'dark'>('light');
@@ -161,6 +165,8 @@ export default function App() {
       setShowPassphraseModal(false);
       setIsNewUser(false);
       showToast('Cofre criptografado com chave mestra com sucesso!');
+      // Sync any local records to Firestore
+      syncLocalRecordsToCloud(currentUser.uid, key).catch(console.error);
       // Trigger celebrate confetti
       confetti({ particleCount: 60, spread: 60, origin: { y: 0.7 } });
       return true;
@@ -171,6 +177,8 @@ export default function App() {
         setCryptoKey(key);
         setShowPassphraseModal(false);
         showToast('Cofre desbloqueado com sucesso!');
+        // Sync any local records to Firestore
+        syncLocalRecordsToCloud(currentUser.uid, key).catch(console.error);
         return true;
       }
       return false;
@@ -361,8 +369,8 @@ export default function App() {
     }
   };
 
-  const carregarDadosWhatsApp = async () => {
-    let codeToParse = whatsappCode?.trim();
+  const carregarDadosWhatsApp = async (directCode?: string) => {
+    let codeToParse = directCode?.trim() || whatsappCode?.trim();
 
     // If input is empty, try to auto-read from clipboard as a convenience
     if (!codeToParse) {
@@ -521,8 +529,23 @@ export default function App() {
             </div>
           </div>
 
-          {/* Controls: Theme & Logout */}
+          {/* Controls: Data Transfer, Theme & Logout */}
           <div className="flex items-center gap-2">
+            <button
+              type="button"
+              onClick={() => setShowDataTransferModal(true)}
+              className={`p-2 rounded-xl border transition-all flex items-center gap-1.5 cursor-pointer active:scale-95 shadow-sm ${
+                theme === 'dark' 
+                  ? 'bg-slate-800 border-slate-700 text-blue-400 hover:bg-slate-700' 
+                  : 'bg-slate-100 border-slate-200 text-blue-600 hover:bg-slate-200'
+              }`}
+              title="Exportar e Carregar Dados (WhatsApp, Backup, Código)"
+              aria-label="Exportar e Carregar Dados"
+            >
+              <ArrowUpDown className="w-4 h-4" />
+              <span className="hidden sm:inline text-xs font-semibold">Backup / Carregar</span>
+            </button>
+
             <button
               type="button"
               onClick={toggleTheme}
@@ -615,125 +638,20 @@ export default function App() {
         {/* TAB 1: RESUMO */}
         {activeTab === 'resumo' && (
           <div className="space-y-4 animate-fade-in">
-            {/* WhatsApp Export & Sync Box */}
-            <div className={`p-4 rounded-3xl border shadow-sm ${theme === 'dark' ? 'bg-slate-900/70 border-slate-800' : 'bg-white border-slate-200'}`}>
-              <div className="flex items-center justify-between mb-2.5">
-                <span className="text-xs font-bold uppercase tracking-wider text-slate-400">
-                  Exportar e Carregar Dados
-                </span>
-                <span className="text-[10px] text-slate-400 font-medium">
-                  Mês: {selectedMonth}/{selectedYear}
-                </span>
-              </div>
-
-              {/* Automatic detection banner for legacy data in this browser */}
-              {legacyBackupsFound.length > 0 && (
-                <div className="p-3 mb-3 rounded-2xl bg-emerald-500/10 border border-emerald-500/30 flex items-center justify-between text-xs animate-fade-in">
-                  <div className="flex items-center gap-2 text-emerald-400">
-                    <Sparkles className="w-4 h-4 shrink-0" />
-                    <span>
-                      Encontramos {legacyBackupsFound[0].totalItens} dados da versão anterior neste dispositivo!
-                    </span>
-                  </div>
-                  <button
-                    type="button"
-                    onClick={() => {
-                      persistData(legacyBackupsFound[0].data);
-                      confetti({ particleCount: 75, spread: 70, origin: { y: 0.7 } });
-                      showToast('✅ Dados da versão anterior carregados com sucesso!');
-                    }}
-                    className="px-3 py-1.5 rounded-xl bg-emerald-600 hover:bg-emerald-500 text-white font-bold text-[11px] transition-all cursor-pointer shrink-0 ml-2 active:scale-95 shadow-sm"
-                  >
-                    Carregar
-                  </button>
-                </div>
-              )}
-
-              {/* Action buttons */}
-              <div className="grid grid-cols-3 gap-2 mb-3">
-                <button
-                  type="button"
-                  onClick={compartilharWhatsAppDados}
-                  className="py-2.5 px-2 rounded-xl bg-emerald-600 hover:bg-emerald-500 text-white font-semibold text-xs flex items-center justify-center gap-1.5 transition-all shadow-sm active:scale-95 cursor-pointer"
-                  title="Compartilhar pelo WhatsApp"
-                >
-                  <Share2 className="w-3.5 h-3.5" />
-                  <span>WhatsApp</span>
-                </button>
-
-                <button
-                  type="button"
-                  onClick={copiarCodigoExportacao}
-                  className="py-2.5 px-2 rounded-xl bg-blue-600 hover:bg-blue-500 text-white font-semibold text-xs flex items-center justify-center gap-1.5 transition-all shadow-sm active:scale-95 cursor-pointer"
-                  title="Copiar código de backup direto para a área de transferência"
-                >
-                  <Copy className="w-3.5 h-3.5" />
-                  <span>Copiar Código</span>
-                </button>
-
-                <button
-                  type="button"
-                  onClick={() => setShowImportModal(true)}
-                  className="py-2.5 px-2 rounded-xl bg-indigo-600 hover:bg-indigo-500 text-white font-semibold text-xs flex items-center justify-center gap-1.5 transition-all shadow-sm active:scale-95 cursor-pointer"
-                  title="Abrir Assistente com detecção automática e suporte à área de transferência"
-                >
-                  <Download className="w-3.5 h-3.5" />
-                  <span>Assistente</span>
-                </button>
-              </div>
-
-              {/* Import input and button */}
-              <div className="space-y-1.5">
-                <div className="flex gap-2">
-                  <div className="relative flex-1 flex items-center">
-                    <input
-                      type="text"
-                      value={whatsappCode}
-                      onChange={(e) => setWhatsappCode(e.target.value)}
-                      onPaste={(e) => {
-                        const pasted = e.clipboardData.getData('text');
-                        if (pasted) {
-                          e.preventDefault();
-                          setWhatsappCode(pasted);
-                        }
-                      }}
-                      placeholder="Cole aqui o código ou mensagem copiada..."
-                      className={`w-full text-xs pl-3.5 pr-8 py-2.5 rounded-xl border focus:outline-none focus:ring-2 focus:ring-blue-500 transition-all ${
-                        theme === 'dark' ? 'bg-slate-950 border-slate-700 text-white placeholder-slate-500' : 'bg-slate-50 border-slate-200 text-slate-900 placeholder-slate-400'
-                      }`}
-                    />
-                    {whatsappCode && (
-                      <button
-                        type="button"
-                        onClick={() => setWhatsappCode('')}
-                        className="absolute right-2 text-slate-400 hover:text-white text-xs p-1"
-                        title="Limpar"
-                      >
-                        ✕
-                      </button>
-                    )}
-                  </div>
-                  <button
-                    type="button"
-                    onClick={carregarDadosWhatsApp}
-                    className="px-4 py-2.5 rounded-xl bg-blue-600 hover:bg-blue-500 text-white text-xs font-bold transition-all shrink-0 active:scale-95 cursor-pointer flex items-center gap-1.5 shadow-md shadow-blue-500/20"
-                    title="Carregar os dados colados para a planilha"
-                  >
-                    <Download className="w-3.5 h-3.5" />
-                    <span>Carregar Dados</span>
-                  </button>
-                </div>
-                <div className="flex items-center justify-between text-[10px] text-slate-400 pt-0.5">
-                  <span>💡 Cole o código ou mensagem e clique em <strong>Carregar Dados</strong>.</span>
-                  <button
-                    type="button"
-                    onClick={() => setShowImportModal(true)}
-                    className="text-blue-400 hover:text-blue-300 underline font-medium cursor-pointer"
-                  >
-                    Abrir Assistente Completo
-                  </button>
-                </div>
-              </div>
+            {/* Compact Header Bar with Export / Carregar Icon Trigger */}
+            <div className="flex items-center justify-between px-1 text-xs">
+              <span className="text-slate-400 font-semibold tracking-wider uppercase text-[11px]">
+                Mês: {selectedMonth}/{selectedYear}
+              </span>
+              <button
+                type="button"
+                onClick={() => setShowDataTransferModal(true)}
+                className="flex items-center gap-1.5 px-3 py-1.5 rounded-xl bg-blue-600/10 hover:bg-blue-600/20 text-blue-500 font-semibold text-xs transition-all cursor-pointer border border-blue-500/20 active:scale-95 shadow-sm"
+                title="Clique para abrir as funções de Exportar e Carregar Dados"
+              >
+                <ArrowUpDown className="w-3.5 h-3.5" />
+                <span>Exportar / Carregar Dados</span>
+              </button>
             </div>
 
             {/* Doughnut Chart Card */}
@@ -1181,6 +1099,28 @@ export default function App() {
         onImport={handleImportFromModal}
         currentMonth={selectedMonth}
         currentYear={selectedYear}
+      />
+
+      {/* Exportar e Carregar Dados Modal */}
+      <DataTransferModal
+        isOpen={showDataTransferModal}
+        onClose={() => setShowDataTransferModal(false)}
+        selectedMonth={selectedMonth}
+        selectedYear={selectedYear}
+        theme={theme}
+        legacyBackupsFound={legacyBackupsFound}
+        onShareWhatsApp={compartilharWhatsAppDados}
+        onCopyCode={copiarCodigoExportacao}
+        onLoadData={(code) => {
+          setWhatsappCode(code);
+          carregarDadosWhatsApp(code);
+        }}
+        onOpenAssistant={() => setShowImportModal(true)}
+        onRestoreLegacy={(legacyData) => {
+          persistData(legacyData);
+          confetti({ particleCount: 75, spread: 70, origin: { y: 0.7 } });
+          showToast('✅ Dados da versão anterior carregados com sucesso!');
+        }}
       />
     </div>
   );
