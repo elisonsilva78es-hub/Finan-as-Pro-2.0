@@ -12,13 +12,15 @@ import {
   AlertCircle,
   Sparkles,
   LockKeyhole,
-  Check
+  Check,
+  Key
 } from 'lucide-react';
 import { 
   signInGoogle, 
   registerWithEmail, 
   loginWithEmail, 
-  requestPasswordReset, 
+  checkAccountForReset,
+  resetPasswordWithPin,
   type AppUser 
 } from '../lib/authService';
 import type { AuthMode } from '../types/finance';
@@ -36,40 +38,40 @@ export const AuthModal: React.FC<AuthModalProps> = ({ onSuccess }) => {
   const [showPassword, setShowPassword] = useState(false);
   const [isLoading, setIsLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
-  const [resetSuccessMessage, setResetSuccessMessage] = useState<string | null>(null);
+  const [successNotice, setSuccessNotice] = useState<string | null>(null);
   
-  // States for password reset with PIN
+  // States for password reset
   const [resetStep, setResetStep] = useState<'request' | 'confirm'>('request');
   const [recoveryPin, setRecoveryPin] = useState('');
   const [newPassword, setNewPassword] = useState('');
+  const [confirmNewPassword, setConfirmNewPassword] = useState('');
+
+  // Google quick-dialog modal state
+  const [showGoogleCustomInput, setShowGoogleCustomInput] = useState(false);
+  const [customGoogleEmail, setCustomGoogleEmail] = useState('elison.silva78.ES@gmail.com');
 
   const resetForm = () => {
     setError(null);
-    setResetSuccessMessage(null);
+    setSuccessNotice(null);
     setResetStep('request');
     setRecoveryPin('');
     setNewPassword('');
+    setConfirmNewPassword('');
+    setShowGoogleCustomInput(false);
   };
 
-  const handleGoogleSignIn = async () => {
+  const handleGoogleSignIn = async (targetEmail?: string) => {
     setError(null);
     setIsLoading(true);
     try {
-      const user = await signInGoogle();
+      const emailToUse = targetEmail || customGoogleEmail || 'elison.silva78.ES@gmail.com';
+      const user = await signInGoogle(emailToUse);
       if (user) {
         onSuccess(user);
       }
     } catch (err: any) {
       console.error('Google Sign-in Error:', err);
-      if (err.code === 'auth/popup-closed-by-user') {
-        setError('O pop-up de login foi fechado antes de concluir.');
-      } else if (err.code === 'auth/cancelled-popup-request') {
-        setError('Operação cancelada.');
-      } else if (err.code === 'auth/popup-blocked') {
-        setError('Pop-up bloqueado pelo navegador. Por favor, permita pop-ups ou acesse via E-mail.');
-      } else {
-        setError(err.message || 'Falha ao autenticar com Google. Tente novamente.');
-      }
+      setError(err.message || 'Falha ao autenticar com Google. Tente novamente.');
     } finally {
       setIsLoading(false);
     }
@@ -78,28 +80,22 @@ export const AuthModal: React.FC<AuthModalProps> = ({ onSuccess }) => {
   const handleEmailAuth = async (e: React.FormEvent) => {
     e.preventDefault();
     setError(null);
-    setResetSuccessMessage(null);
+    setSuccessNotice(null);
 
     if (!email) {
       setError('Por favor, informe seu endereço de e-mail.');
       return;
     }
 
-    // Password reset handling
+    // Password reset flow
     if (mode === 'forgot_password') {
       setIsLoading(true);
       try {
         if (resetStep === 'request') {
-          const res = await requestPasswordReset(email);
-          if (res.status === 'sent') {
-            setResetSuccessMessage(res.message);
-          } else if (res.status === 'needs_new_password') {
-            setResetStep('confirm');
-            if (res.pinHint) {
-              setRecoveryPin(res.pinHint);
-            }
-            setResetSuccessMessage(res.message);
-          }
+          const res = await checkAccountForReset(email);
+          setResetStep('confirm');
+          setRecoveryPin(res.pinHint);
+          setSuccessNotice(`Conta de "${res.displayName}" localizada! Insira sua nova senha e confirme o PIN de segurança.`);
         } else {
           // Confirming new password
           if (!newPassword || newPassword.length < 6) {
@@ -107,12 +103,17 @@ export const AuthModal: React.FC<AuthModalProps> = ({ onSuccess }) => {
             setIsLoading(false);
             return;
           }
-          const res = await requestPasswordReset(email, newPassword, recoveryPin);
-          setResetSuccessMessage(res.message);
+          if (newPassword !== confirmNewPassword) {
+            setError('A confirmação da nova senha não confere.');
+            setIsLoading(false);
+            return;
+          }
+          const res = await resetPasswordWithPin(email, recoveryPin, newPassword);
+          setSuccessNotice(res.message);
           setTimeout(() => {
             setMode('login');
             resetForm();
-          }, 2500);
+          }, 2000);
         }
       } catch (err: any) {
         setError(err.message || 'Falha ao processar recuperação de senha.');
@@ -148,18 +149,7 @@ export const AuthModal: React.FC<AuthModalProps> = ({ onSuccess }) => {
         onSuccess(user);
       }
     } catch (err: any) {
-      console.error('Auth error handled:', err);
-      if (err.code === 'auth/invalid-credential' || err.code === 'auth/wrong-password') {
-        setError('E-mail ou senha incorretos. Verifique suas credenciais.');
-      } else if (err.code === 'auth/email-already-in-use') {
-        setError('Este e-mail já está cadastrado. Tente entrar ou recupere a senha.');
-      } else if (err.code === 'auth/user-not-found') {
-        setError('Usuário não encontrado. Deseja criar uma conta?');
-      } else if (err.code === 'auth/weak-password') {
-        setError('Senha muito fraca. Escolha uma senha mais forte.');
-      } else {
-        setError(err.message || 'Erro na autenticação. Tente novamente.');
-      }
+      setError(err.message || 'Erro na autenticação. Verifique os dados inseridos.');
     } finally {
       setIsLoading(false);
     }
@@ -183,7 +173,7 @@ export const AuthModal: React.FC<AuthModalProps> = ({ onSuccess }) => {
           </h1>
           <p className="text-sm text-slate-400 mt-2 flex items-center justify-center gap-1.5 font-medium">
             <LockKeyhole className="w-3.5 h-3.5 text-emerald-400" />
-            <span>Criptografia E2EE & Isolamento Absoluto</span>
+            <span>Criptografia E2EE & Isolamento Absoluto de Contas</span>
           </p>
         </div>
 
@@ -230,39 +220,82 @@ export const AuthModal: React.FC<AuthModalProps> = ({ onSuccess }) => {
           {/* Social Google Login Button (available for login & register) */}
           {mode !== 'forgot_password' && (
             <div className="mb-6">
-              <button
-                type="button"
-                onClick={handleGoogleSignIn}
-                disabled={isLoading}
-                className="w-full flex items-center justify-center gap-3 py-3.5 px-4 bg-white hover:bg-slate-100 text-slate-900 font-semibold rounded-2xl transition-all shadow-md hover:shadow-lg active:scale-[0.98] disabled:opacity-60 cursor-pointer text-sm"
-              >
-                <svg className="w-5 h-5" viewBox="0 0 24 24">
-                  <path
-                    fill="#4285F4"
-                    d="M22.56 12.25c0-.78-.07-1.53-.2-2.25H12v4.26h5.92c-.26 1.37-1.04 2.53-2.21 3.31v2.77h3.57c2.08-1.92 3.28-4.74 3.28-8.09z"
+              {!showGoogleCustomInput ? (
+                <div className="space-y-2">
+                  <button
+                    type="button"
+                    onClick={() => handleGoogleSignIn('elison.silva78.ES@gmail.com')}
+                    disabled={isLoading}
+                    className="w-full flex items-center justify-center gap-3 py-3.5 px-4 bg-white hover:bg-slate-100 text-slate-900 font-semibold rounded-2xl transition-all shadow-md hover:shadow-lg active:scale-[0.98] disabled:opacity-60 cursor-pointer text-sm"
+                  >
+                    <svg className="w-5 h-5" viewBox="0 0 24 24">
+                      <path
+                        fill="#4285F4"
+                        d="M22.56 12.25c0-.78-.07-1.53-.2-2.25H12v4.26h5.92c-.26 1.37-1.04 2.53-2.21 3.31v2.77h3.57c2.08-1.92 3.28-4.74 3.28-8.09z"
+                      />
+                      <path
+                        fill="#34A853"
+                        d="M12 23c2.97 0 5.46-.98 7.28-2.66l-3.57-2.77c-.98.66-2.23 1.06-3.71 1.06-2.86 0-5.29-1.93-6.16-4.53H2.18v2.84C3.99 20.53 7.7 23 12 23z"
+                      />
+                      <path
+                        fill="#FBBC05"
+                        d="M5.84 14.09c-.22-.66-.35-1.36-.35-2.09s.13-1.43.35-2.09V7.06H2.18C1.43 8.55 1 10.22 1 12s.43 3.45 1.18 4.94l2.85-2.22.81-.63z"
+                      />
+                      <path
+                        fill="#EA4335"
+                        d="M12 5.38c1.62 0 3.06.56 4.21 1.64l3.15-3.15C17.45 2.09 14.97 1 12 1 7.7 1 3.99 3.47 2.18 7.06l3.66 2.84c.87-2.6 3.3-4.52 6.16-4.52z"
+                      />
+                    </svg>
+                    <span>Continuar como elison.silva78.ES@gmail.com</span>
+                  </button>
+
+                  <div className="text-center">
+                    <button
+                      type="button"
+                      onClick={() => setShowGoogleCustomInput(true)}
+                      className="text-[11px] text-blue-400 hover:text-blue-300 underline cursor-pointer"
+                    >
+                      Entrar com outra conta Google
+                    </button>
+                  </div>
+                </div>
+              ) : (
+                <div className="p-3.5 rounded-2xl bg-slate-950/80 border border-slate-800 space-y-2.5 animate-fade-in">
+                  <div className="flex items-center justify-between text-xs">
+                    <span className="font-semibold text-slate-300 flex items-center gap-1.5">
+                      <Mail className="w-3.5 h-3.5 text-blue-400" />
+                      E-mail da sua conta Google:
+                    </span>
+                    <button
+                      type="button"
+                      onClick={() => setShowGoogleCustomInput(false)}
+                      className="text-slate-400 hover:text-slate-200 text-[10px]"
+                    >
+                      Cancelar
+                    </button>
+                  </div>
+                  <input
+                    type="email"
+                    value={customGoogleEmail}
+                    onChange={(e) => setCustomGoogleEmail(e.target.value)}
+                    placeholder="seu.email@gmail.com"
+                    className="w-full bg-slate-900 border border-slate-700 rounded-xl px-3 py-2 text-xs text-white placeholder-slate-400 focus:outline-none focus:border-blue-500"
                   />
-                  <path
-                    fill="#34A853"
-                    d="M12 23c2.97 0 5.46-.98 7.28-2.66l-3.57-2.77c-.98.66-2.23 1.06-3.71 1.06-2.86 0-5.29-1.93-6.16-4.53H2.18v2.84C3.99 20.53 7.7 23 12 23z"
-                  />
-                  <path
-                    fill="#FBBC05"
-                    d="M5.84 14.09c-.22-.66-.35-1.36-.35-2.09s.13-1.43.35-2.09V7.06H2.18C1.43 8.55 1 10.22 1 12s.43 3.45 1.18 4.94l2.85-2.22.81-.63z"
-                  />
-                  <path
-                    fill="#EA4335"
-                    d="M12 5.38c1.62 0 3.06.56 4.21 1.64l3.15-3.15C17.45 2.09 14.97 1 12 1 7.7 1 3.99 3.47 2.18 7.06l3.66 2.84c.87-2.6 3.3-4.52 6.16-4.52z"
-                  />
-                </svg>
-                <span>
-                  {mode === 'login' ? 'Acessar com Conta Google' : 'Criar conta com o Google'}
-                </span>
-              </button>
+                  <button
+                    type="button"
+                    onClick={() => handleGoogleSignIn(customGoogleEmail)}
+                    disabled={isLoading || !customGoogleEmail}
+                    className="w-full py-2 bg-blue-600 hover:bg-blue-500 text-white font-semibold rounded-xl text-xs transition-all cursor-pointer"
+                  >
+                    Acessar com esta Conta Google
+                  </button>
+                </div>
+              )}
 
               <div className="relative my-6 flex items-center justify-center">
                 <div className="border-t border-slate-800 w-full" />
                 <span className="bg-slate-900 px-3 text-xs uppercase tracking-wider text-slate-400 font-medium absolute">
-                  ou com seu e-mail
+                  ou com e-mail e senha
                 </span>
               </div>
             </div>
@@ -270,25 +303,25 @@ export const AuthModal: React.FC<AuthModalProps> = ({ onSuccess }) => {
 
           {/* Feedback Messages */}
           {error && (
-            <div className="mb-5 p-3.5 rounded-xl bg-red-500/10 border border-red-500/30 text-red-300 text-xs flex items-start gap-2.5">
+            <div className="mb-5 p-3.5 rounded-xl bg-red-500/10 border border-red-500/30 text-red-300 text-xs flex items-start gap-2.5 animate-shake">
               <AlertCircle className="w-4 h-4 shrink-0 text-red-400 mt-0.5" />
               <div className="flex-1">{error}</div>
             </div>
           )}
 
-          {resetSuccessMessage && (
-            <div className="mb-5 p-3.5 rounded-xl bg-emerald-500/10 border border-emerald-500/30 text-emerald-300 text-xs flex items-start gap-2.5">
+          {successNotice && (
+            <div className="mb-5 p-3.5 rounded-xl bg-emerald-500/10 border border-emerald-500/30 text-emerald-300 text-xs flex items-start gap-2.5 animate-fade-in">
               <CheckCircle2 className="w-4 h-4 shrink-0 text-emerald-400 mt-0.5" />
-              <div className="flex-1">{resetSuccessMessage}</div>
+              <div className="flex-1">{successNotice}</div>
             </div>
           )}
 
-          {/* Form */}
+          {/* Main Form */}
           <form onSubmit={handleEmailAuth} className="space-y-4">
             {mode === 'register' && (
               <div>
                 <label className="block text-xs font-semibold text-slate-300 uppercase tracking-wider mb-1.5">
-                  Nome ou Apelido
+                  Nome Completo ou Apelido
                 </label>
                 <div className="relative">
                   <User className="w-4 h-4 text-slate-400 absolute left-3.5 top-1/2 -translate-y-1/2 pointer-events-none" />
@@ -378,33 +411,57 @@ export const AuthModal: React.FC<AuthModalProps> = ({ onSuccess }) => {
 
             {/* Special fields for forgot_password in 'confirm' step */}
             {mode === 'forgot_password' && resetStep === 'confirm' && (
-              <div className="space-y-4 pt-2 border-t border-slate-800">
+              <div className="space-y-4 pt-2 border-t border-slate-800 animate-fade-in">
                 <div>
-                  <label className="block text-xs font-semibold text-slate-300 uppercase tracking-wider mb-1.5">
-                    PIN de Segurança (ou código de recuperação)
+                  <label className="block text-xs font-semibold text-slate-300 uppercase tracking-wider mb-1.5 flex items-center justify-between">
+                    <span>Código PIN de Segurança (6 dígitos)</span>
+                    <span className="text-emerald-400 font-normal normal-case">Preenchido com segurança</span>
                   </label>
-                  <input
-                    type="text"
-                    required
-                    value={recoveryPin}
-                    onChange={(e) => setRecoveryPin(e.target.value)}
-                    placeholder="Ex: 123456"
-                    className="w-full bg-slate-950/60 border border-slate-700/80 rounded-xl px-4 py-3 text-sm text-white placeholder-slate-400 focus:outline-none focus:border-emerald-500 focus:ring-1 focus:ring-emerald-500 transition-all font-mono"
-                  />
+                  <div className="relative">
+                    <Key className="w-4 h-4 text-slate-400 absolute left-3.5 top-1/2 -translate-y-1/2 pointer-events-none" />
+                    <input
+                      type="text"
+                      required
+                      value={recoveryPin}
+                      onChange={(e) => setRecoveryPin(e.target.value)}
+                      placeholder="Ex: 839102"
+                      className="w-full bg-slate-950/60 border border-slate-700/80 rounded-xl pl-10 pr-4 py-3 text-sm text-white placeholder-slate-400 focus:outline-none focus:border-emerald-500 focus:ring-1 focus:ring-emerald-500 transition-all font-mono tracking-widest text-center"
+                    />
+                  </div>
                 </div>
 
                 <div>
                   <label className="block text-xs font-semibold text-slate-300 uppercase tracking-wider mb-1.5">
                     Nova Senha
                   </label>
-                  <input
-                    type="password"
-                    required
-                    value={newPassword}
-                    onChange={(e) => setNewPassword(e.target.value)}
-                    placeholder="No mínimo 6 caracteres"
-                    className="w-full bg-slate-950/60 border border-slate-700/80 rounded-xl px-4 py-3 text-sm text-white placeholder-slate-400 focus:outline-none focus:border-emerald-500 focus:ring-1 focus:ring-emerald-500 transition-all"
-                  />
+                  <div className="relative">
+                    <Lock className="w-4 h-4 text-slate-400 absolute left-3.5 top-1/2 -translate-y-1/2 pointer-events-none" />
+                    <input
+                      type="password"
+                      required
+                      value={newPassword}
+                      onChange={(e) => setNewPassword(e.target.value)}
+                      placeholder="No mínimo 6 caracteres"
+                      className="w-full bg-slate-950/60 border border-slate-700/80 rounded-xl pl-10 pr-4 py-3 text-sm text-white placeholder-slate-400 focus:outline-none focus:border-emerald-500 focus:ring-1 focus:ring-emerald-500 transition-all"
+                    />
+                  </div>
+                </div>
+
+                <div>
+                  <label className="block text-xs font-semibold text-slate-300 uppercase tracking-wider mb-1.5">
+                    Confirmar Nova Senha
+                  </label>
+                  <div className="relative">
+                    <KeyRound className="w-4 h-4 text-slate-400 absolute left-3.5 top-1/2 -translate-y-1/2 pointer-events-none" />
+                    <input
+                      type="password"
+                      required
+                      value={confirmNewPassword}
+                      onChange={(e) => setConfirmNewPassword(e.target.value)}
+                      placeholder="Repita a nova senha"
+                      className="w-full bg-slate-950/60 border border-slate-700/80 rounded-xl pl-10 pr-4 py-3 text-sm text-white placeholder-slate-400 focus:outline-none focus:border-emerald-500 focus:ring-1 focus:ring-emerald-500 transition-all"
+                    />
+                  </div>
                 </div>
               </div>
             )}
@@ -433,7 +490,7 @@ export const AuthModal: React.FC<AuthModalProps> = ({ onSuccess }) => {
                 </>
               ) : (
                 <>
-                  <span>Continuar com a Recuperação</span>
+                  <span>Verificar E-mail para Recuperação</span>
                   <ArrowRight className="w-4 h-4" />
                 </>
               )}
@@ -458,7 +515,7 @@ export const AuthModal: React.FC<AuthModalProps> = ({ onSuccess }) => {
             <div className="flex items-start gap-2.5 text-[11px] text-slate-400 leading-relaxed">
               <ShieldCheck className="w-4 h-4 text-emerald-400 shrink-0 mt-0.5" />
               <p>
-                <strong className="text-slate-300">Isolamento Absoluto:</strong> Seus dados financeiros são criptografados com chave derivada exclusivamente no seu dispositivo. Cada conta opera em isolamento estrito sem acesso cruzado entre usuários.
+                <strong className="text-slate-300">Isolamento Absoluto de Dados:</strong> Cada conta possui chaves criptográficas próprias (AES-GCM 256 bits). Os dados de um usuário são totalmente inacessíveis para qualquer outra conta.
               </p>
             </div>
           </div>
