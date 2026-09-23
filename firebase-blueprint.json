@@ -1,0 +1,66 @@
+{
+  "entities": {
+    "UserProfile": {
+      "title": "UserProfile",
+      "description": "User profile metadata, cryptographic salt, and key verification payload for client-side zero-knowledge E2EE validation.",
+      "type": "object",
+      "properties": {
+        "userId": { "type": "string", "description": "The unique Firebase Auth UID" },
+        "email": { "type": "string", "description": "User email" },
+        "displayName": { "type": "string", "description": "Display name or username" },
+        "photoURL": { "type": "string", "description": "User profile avatar" },
+        "e2eeSalt": { "type": "string", "description": "Base64 random cryptographic salt (PBKDF2 100k iterations)" },
+        "e2eeVerificationHash": { "type": "string", "description": "Encrypted known token for client-side passphrase verification" },
+        "updatedAt": { "type": "string", "description": "ISO timestamp of last update" }
+      },
+      "required": ["userId", "email"]
+    },
+    "MonthlyRecord": {
+      "title": "MonthlyRecord",
+      "description": "Encrypted financial ledger for a specific month and year, strictly accessible solely by the account owner.",
+      "type": "object",
+      "properties": {
+        "userId": { "type": "string", "description": "The user ID who owns this encrypted record" },
+        "monthYear": { "type": "string", "description": "Identifier MM_YYYY (e.g. 09_2026)" },
+        "encryptedPayload": { "type": "string", "description": "AES-GCM-256 ciphertext in Base64 containing serialized items" },
+        "iv": { "type": "string", "description": "Initialization vector in Base64 (12 bytes)" },
+        "version": { "type": "integer", "description": "Payload schema version" },
+        "summary": {
+          "type": "object",
+          "description": "Optional non-sensitive or masked summary totals if needed",
+          "properties": {
+            "itemsCount": { "type": "integer" }
+          }
+        },
+        "updatedAt": { "type": "string", "description": "ISO timestamp of last write" }
+      },
+      "required": ["userId", "monthYear", "encryptedPayload", "iv"]
+    },
+    "SecurityAudit": {
+      "title": "SecurityAudit",
+      "description": "Client-side private security event log for detecting sign-in device changes and session integrity.",
+      "type": "object",
+      "properties": {
+        "userId": { "type": "string" },
+        "eventType": { "type": "string", "enum": ["LOGIN_GOOGLE", "LOGIN_PASSWORD", "PASSWORD_RESET_SENT", "KEY_UNLOCKED", "DATA_SYNCED"] },
+        "timestamp": { "type": "string" },
+        "userAgent": { "type": "string" }
+      },
+      "required": ["userId", "eventType", "timestamp"]
+    }
+  },
+  "firestore": {
+    "/users/{userId}": {
+      "schema": "UserProfile",
+      "description": "Top-level user private profile document"
+    },
+    "/users/{userId}/records/{recordId}": {
+      "schema": "MonthlyRecord",
+      "description": "Subcollection for monthly encrypted financial ledger documents"
+    },
+    "/users/{userId}/auditLogs/{logId}": {
+      "schema": "SecurityAudit",
+      "description": "Private security audit trail"
+    }
+  }
+}

@@ -1,0 +1,6 @@
+{
+  "name": "Finanças Pro - Gestão Financeira Segura E2EE",
+  "description": "Aplicativo financeiro pessoal de alta segurança com autenticação Google/E-mail, recuperação de senha, criptografia de ponta a ponta (AES-GCM/PBKDF2) e isolamento absoluto de dados entre usuários na nuvem.",
+  "requestFramePermissions": [],
+  "majorCapabilities": ["MAJOR_CAPABILITY_SERVER_SIDE_GEMINI_API"]
+}
