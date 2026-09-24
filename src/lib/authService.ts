@@ -1,12 +1,3 @@
-import { sha256, hashPasswordWithSalt, generateRandomSalt } from './crypto';
-import { auth } from './firebase';
-import { 
-  GoogleAuthProvider, 
-  signInWithPopup, 
-  signOut as fbSignOut, 
-  onAuthStateChanged 
-} from 'firebase/auth';
-
 export interface AppUser {
   uid: string;
   email: string;
@@ -15,49 +6,31 @@ export interface AppUser {
   provider: 'google' | 'email';
 }
 
-export interface StoredUserAccount {
-  uid: string;
-  email: string;
-  displayName: string;
-  passwordHash: string;
-  salt: string;
-  recoveryPin: string;
-  provider: 'google' | 'email';
-  createdAt: string;
-}
-
-const STORAGE_ACCOUNTS_KEY = 'fin_secure_users_vault_db';
 const ACTIVE_SESSION_KEY = 'fin_active_user_session';
+const AUTH_TOKEN_KEY = 'fin_auth_token';
 
 // Auth subscribers list
 type AuthSubscriber = (user: AppUser | null) => void;
 const subscribers: Set<AuthSubscriber> = new Set();
 
-// Listen to Firebase Auth state for automatic session sync
-onAuthStateChanged(auth, (fbUser) => {
-  if (fbUser) {
-    const appUser: AppUser = {
-      uid: fbUser.uid,
-      email: fbUser.email || '',
-      displayName: fbUser.displayName || fbUser.email?.split('@')[0] || 'Usuário Google',
-      photoURL: fbUser.photoURL || undefined,
-      provider: 'google',
-    };
-    setActiveUser(appUser);
-  }
-});
-
-function getStoredAccounts(): Record<string, StoredUserAccount> {
+export function getAuthToken(): string | null {
   try {
-    const raw = localStorage.getItem(STORAGE_ACCOUNTS_KEY);
-    return raw ? JSON.parse(raw) : {};
+    return localStorage.getItem(AUTH_TOKEN_KEY);
   } catch {
-    return {};
+    return null;
   }
 }
 
-function saveStoredAccounts(accounts: Record<string, StoredUserAccount>) {
-  localStorage.setItem(STORAGE_ACCOUNTS_KEY, JSON.stringify(accounts));
+export function setAuthToken(token: string | null) {
+  try {
+    if (token) {
+      localStorage.setItem(AUTH_TOKEN_KEY, token);
+    } else {
+      localStorage.removeItem(AUTH_TOKEN_KEY);
+    }
+  } catch {
+    // ignore
+  }
 }
 
 function notifySubscribers(user: AppUser | null) {
@@ -72,17 +45,6 @@ function notifySubscribers(user: AppUser | null) {
 
 // Get current active session
 export function getActiveUser(): AppUser | null {
-  // If Firebase Auth has a current user, prefer it
-  if (auth.currentUser) {
-    return {
-      uid: auth.currentUser.uid,
-      email: auth.currentUser.email || '',
-      displayName: auth.currentUser.displayName || auth.currentUser.email?.split('@')[0] || 'Usuário Google',
-      photoURL: auth.currentUser.photoURL || undefined,
-      provider: 'google',
-    };
-  }
-
   try {
     const raw = localStorage.getItem(ACTIVE_SESSION_KEY);
     return raw ? JSON.parse(raw) : null;
@@ -92,89 +54,132 @@ export function getActiveUser(): AppUser | null {
 }
 
 // Set active user session
-function setActiveUser(user: AppUser | null) {
+function setActiveUser(user: AppUser | null, token?: string | null) {
   if (user) {
     localStorage.setItem(ACTIVE_SESSION_KEY, JSON.stringify(user));
   } else {
     localStorage.removeItem(ACTIVE_SESSION_KEY);
   }
+
+  if (token !== undefined) {
+    setAuthToken(token);
+  }
+
   notifySubscribers(user);
+}
+
+// Helper for native Cloud API calls with automatic Bearer Token header
+export async function cloudFetch<T>(endpoint: string, options: RequestInit = {}): Promise<T | null> {
+  try {
+    const token = getAuthToken();
+    const headers: Record<string, string> = {
+      'Content-Type': 'application/json',
+      ...((options.headers as Record<string, string>) || {}),
+    };
+
+    if (token && !headers['Authorization']) {
+      headers['Authorization'] = `Bearer ${token}`;
+    }
+
+    const res = await fetch(endpoint, {
+      ...options,
+      headers,
+    });
+
+    if (res.status === 401) {
+      // Session expired or invalidated on backend
+      console.warn('Session expired or unauthorized for:', endpoint);
+      // Only clear if not an auth endpoint (e.g. login attempt)
+      if (!endpoint.startsWith('/api/auth/login') && !endpoint.startsWith('/api/auth/register')) {
+        setActiveUser(null, null);
+      }
+      return null;
+    }
+
+    if (!res.ok) {
+      let errMessage = 'Erro na requisição';
+      try {
+        const errorData = await res.json();
+        if (errorData?.error) errMessage = errorData.error;
+      } catch {
+        // ignore
+      }
+      throw new Error(errMessage);
+    }
+
+    return await res.json();
+  } catch (err: any) {
+    if (err.message && err.message !== 'Failed to fetch') {
+      throw err;
+    }
+    console.warn(`Native Cloud API ${endpoint} unreachable:`, err);
+    return null;
+  }
 }
 
 // Subscribe to auth state changes
 export function subscribeToAuth(callback: AuthSubscriber): () => void {
   subscribers.add(callback);
-  // Emit current active user immediately
-  callback(getActiveUser());
+
+  // Check backend validity of stored session on initial load
+  const token = getAuthToken();
+  const cachedUser = getActiveUser();
+
+  if (token && cachedUser) {
+    // Validate session with server
+    cloudFetch<{ success: boolean; user: AppUser }>('/api/auth/me')
+      .then((res) => {
+        if (res && res.user) {
+          callback(res.user);
+        } else {
+          setActiveUser(null, null);
+          callback(null);
+        }
+      })
+      .catch(() => {
+        // If server is unreachable but we have cached session, emit cachedUser temporarily
+        callback(cachedUser);
+      });
+  } else {
+    callback(null);
+  }
 
   return () => {
     subscribers.delete(callback);
   };
 }
 
-// Google Sign In (Direct Firebase Auth with fallback)
+// Google Sign In (Direct native cloud authentication)
 export async function signInGoogle(providedEmail?: string, providedName?: string): Promise<AppUser> {
-  // If no email was manually provided, initiate real Google Sign-In popup with Firebase Auth
-  if (!providedEmail) {
-    try {
-      const provider = new GoogleAuthProvider();
-      provider.setCustomParameters({ prompt: 'select_account' });
-      const cred = await signInWithPopup(auth, provider);
-      const fbUser = cred.user;
-
-      const appUser: AppUser = {
-        uid: fbUser.uid,
-        email: fbUser.email || '',
-        displayName: fbUser.displayName || fbUser.email?.split('@')[0] || 'Usuário Google',
-        photoURL: fbUser.photoURL || undefined,
-        provider: 'google',
-      };
-
-      setActiveUser(appUser);
-      return appUser;
-    } catch (err: any) {
-      console.warn('Firebase Popup sign-in error:', err);
-      throw err;
-    }
+  if (!providedEmail || !providedEmail.trim()) {
+    throw new Error('Por favor, informe o seu e-mail do Google.');
   }
 
-  // Fallback if user typed their Google email
   const normalizedEmail = providedEmail.trim().toLowerCase();
   const displayName = providedName || normalizedEmail.split('@')[0] || 'Usuário Google';
-  
-  const accounts = getStoredAccounts();
-  let account = accounts[normalizedEmail];
 
-  if (!account) {
-    const hash = await sha256(normalizedEmail);
-    const uid = `usr_g_${hash.substring(0, 16)}`;
-    const salt = generateRandomSalt(16);
-    const recoveryPin = Math.floor(100000 + Math.random() * 900000).toString();
-    const passwordHash = await hashPasswordWithSalt(`google_${uid}_oauth`, salt);
-
-    account = {
-      uid,
+  const res = await fetch('/api/auth/google', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({
       email: normalizedEmail,
       displayName,
-      passwordHash,
-      salt,
-      recoveryPin,
-      provider: 'google',
-      createdAt: new Date().toISOString(),
-    };
+    }),
+  });
 
-    accounts[normalizedEmail] = account;
-    saveStoredAccounts(accounts);
+  const data = await res.json();
+  if (!res.ok || !data.success) {
+    throw new Error(data.error || 'Falha ao autenticar com e-mail Google.');
   }
 
   const appUser: AppUser = {
-    uid: account.uid,
-    email: account.email,
-    displayName: account.displayName,
+    uid: data.user.uid,
+    email: data.user.email,
+    displayName: data.user.displayName,
     provider: 'google',
   };
 
-  setActiveUser(appUser);
+  setActiveUser(appUser, data.token);
   return appUser;
 }
 
@@ -194,40 +199,30 @@ export async function registerWithEmail(
     throw new Error('A senha deve conter no mínimo 6 caracteres.');
   }
 
-  const accounts = getStoredAccounts();
-  if (accounts[normalizedEmail]) {
-    throw new Error('Este e-mail já está cadastrado. Por favor, acesse a aba "Entrar" ou use a recuperação de senha.');
+  const res = await fetch('/api/auth/register', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({
+      email: normalizedEmail,
+      password,
+      displayName: displayName?.trim() || normalizedEmail.split('@')[0],
+    }),
+  });
+
+  const data = await res.json();
+  if (!res.ok || !data.success) {
+    throw new Error(data.error || 'Falha ao realizar cadastro.');
   }
 
-  const hash = await sha256(normalizedEmail);
-  const uid = `usr_e_${hash.substring(0, 16)}`;
-  const salt = generateRandomSalt(16);
-  const passwordHash = await hashPasswordWithSalt(password, salt);
-  const recoveryPin = Math.floor(100000 + Math.random() * 900000).toString(); // 6-digit PIN
-
-  const newAccount: StoredUserAccount = {
-    uid,
-    email: normalizedEmail,
-    displayName: displayName?.trim() || normalizedEmail.split('@')[0],
-    passwordHash,
-    salt,
-    recoveryPin,
-    provider: 'email',
-    createdAt: new Date().toISOString(),
-  };
-
-  accounts[normalizedEmail] = newAccount;
-  saveStoredAccounts(accounts);
-
   const appUser: AppUser = {
-    uid,
-    email: normalizedEmail,
-    displayName: newAccount.displayName,
+    uid: data.user.uid,
+    email: data.user.email,
+    displayName: data.user.displayName,
     provider: 'email',
   };
 
-  setActiveUser(appUser);
-  return { user: appUser, recoveryPin };
+  setActiveUser(appUser, data.token);
+  return { user: appUser, recoveryPin: data.recoveryPin };
 }
 
 // Sign In with Email & Password
@@ -241,26 +236,28 @@ export async function loginWithEmail(email: string, password: string): Promise<A
     throw new Error('Por favor, digite sua senha.');
   }
 
-  const accounts = getStoredAccounts();
-  const account = accounts[normalizedEmail];
+  const res = await fetch('/api/auth/login', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({
+      email: normalizedEmail,
+      password,
+    }),
+  });
 
-  if (!account) {
-    throw new Error('Nenhuma conta encontrada com este e-mail. Por favor, clique na aba "Cadastrar" para criar sua conta.');
-  }
-
-  const hashAttempt = await hashPasswordWithSalt(password, account.salt);
-  if (hashAttempt !== account.passwordHash) {
-    throw new Error('Senha incorreta. Verifique suas credenciais e tente novamente.');
+  const data = await res.json();
+  if (!res.ok || !data.success) {
+    throw new Error(data.error || 'E-mail ou senha incorretos.');
   }
 
   const appUser: AppUser = {
-    uid: account.uid,
-    email: account.email,
-    displayName: account.displayName,
-    provider: account.provider,
+    uid: data.user.uid,
+    email: data.user.email,
+    displayName: data.user.displayName,
+    provider: data.user.provider || 'email',
   };
 
-  setActiveUser(appUser);
+  setActiveUser(appUser, data.token);
   return appUser;
 }
 
@@ -271,17 +268,22 @@ export async function checkAccountForReset(email: string): Promise<{
   displayName: string;
 }> {
   const normalizedEmail = email.trim().toLowerCase();
-  const accounts = getStoredAccounts();
-  const account = accounts[normalizedEmail];
 
-  if (!account) {
-    throw new Error('Nenhuma conta cadastrada com este e-mail.');
+  const res = await fetch('/api/auth/check-account', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ email: normalizedEmail }),
+  });
+
+  const data = await res.json();
+  if (!res.ok || !data.exists) {
+    throw new Error(data.error || 'Nenhuma conta cadastrada com este e-mail.');
   }
 
   return {
     exists: true,
-    pinHint: account.recoveryPin,
-    displayName: account.displayName,
+    pinHint: data.pinHint,
+    displayName: data.displayName,
   };
 }
 
@@ -297,48 +299,34 @@ export async function resetPasswordWithPin(
     throw new Error('A nova senha deve ter no mínimo 6 caracteres.');
   }
 
-  const accounts = getStoredAccounts();
-  const account = accounts[normalizedEmail];
+  const res = await fetch('/api/auth/reset-password', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({
+      email: normalizedEmail,
+      recoveryPin: recoveryPin.trim(),
+      newPassword,
+    }),
+  });
 
-  if (!account) {
-    throw new Error('Conta não localizada.');
+  const data = await res.json();
+  if (!res.ok || !data.success) {
+    throw new Error(data.error || 'Falha ao redefinir a senha.');
   }
-
-  if (recoveryPin.trim() !== account.recoveryPin) {
-    throw new Error('Código PIN de segurança incorreto. Verifique o código fornecido.');
-  }
-
-  // Update password hash
-  const newSalt = generateRandomSalt(16);
-  const newHash = await hashPasswordWithSalt(newPassword, newSalt);
-
-  account.passwordHash = newHash;
-  account.salt = newSalt;
-  accounts[normalizedEmail] = account;
-  saveStoredAccounts(accounts);
 
   return {
     success: true,
-    message: 'Senha redefinida com sucesso! Você já pode entrar com a sua nova senha.',
+    message: data.message || 'Senha redefinida com sucesso!',
   };
 }
 
 // Logout
 export async function logoutUser(): Promise<void> {
   try {
-    await fbSignOut(auth);
-  } catch (e) {
-    console.error('Error signing out from Firebase:', e);
+    await cloudFetch('/api/auth/logout', { method: 'POST' });
+  } catch {
+    // ignore
+  } finally {
+    setActiveUser(null, null);
   }
-  setActiveUser(null);
-}
-
-// Get all registered accounts (public metadata only)
-export function getRegisteredAccountsList(): Array<{ email: string; displayName: string; provider: string }> {
-  const accounts = getStoredAccounts();
-  return Object.values(accounts).map((acc) => ({
-    email: acc.email,
-    displayName: acc.displayName,
-    provider: acc.provider,
-  }));
 }

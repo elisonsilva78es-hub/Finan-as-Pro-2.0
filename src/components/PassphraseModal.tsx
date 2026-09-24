@@ -4,6 +4,7 @@ import { KeyRound, ShieldCheck, Lock, AlertCircle, Sparkles, CheckCircle2 } from
 interface PassphraseModalProps {
   isNewUser: boolean;
   onUnlock: (passphrase: string) => Promise<boolean>;
+  onResetVault?: () => void;
   onSignOut: () => void;
   userEmail: string;
 }
@@ -11,6 +12,7 @@ interface PassphraseModalProps {
 export const PassphraseModal: React.FC<PassphraseModalProps> = ({
   isNewUser,
   onUnlock,
+  onResetVault,
   onSignOut,
   userEmail,
 }) => {
@@ -19,18 +21,25 @@ export const PassphraseModal: React.FC<PassphraseModalProps> = ({
   const [error, setError] = useState<string | null>(null);
   const [isLoading, setIsLoading] = useState(false);
   const [showPassphrase, setShowPassphrase] = useState(false);
+  const [showResetConfirm, setShowResetConfirm] = useState(false);
 
   const handleSubmit = async (e: React.FormEvent) => {
     e.preventDefault();
     setError(null);
 
-    if (!passphrase || passphrase.length < 6) {
-      setError('A chave mestra deve ter pelo menos 6 caracteres.');
+    const trimmed = passphrase.trim();
+    if (!trimmed) {
+      setError('Por favor, digite a sua Chave Mestra.');
       return;
     }
 
-    if (isNewUser && passphrase !== confirmPassphrase) {
-      setError('As chaves mestras digitadas não coincidem.');
+    if (trimmed.length < 6) {
+      setError('A chave mestra deve conter no mínimo 6 caracteres.');
+      return;
+    }
+
+    if (isNewUser && trimmed !== confirmPassphrase.trim()) {
+      setError('As chaves digitadas não coincidem. Verifique a digitação.');
       return;
     }
 
@@ -38,11 +47,11 @@ export const PassphraseModal: React.FC<PassphraseModalProps> = ({
     try {
       const ok = await onUnlock(passphrase);
       if (!ok) {
-        setError('Chave de descriptografia incorreta. Não foi possível decifrar seus dados protegidos.');
+        setError('Chave mestra incorreta. Verifique se digitou a chave criada para a sua conta.');
       }
     } catch (err: any) {
       console.error(err);
-      setError(err.message || 'Falha ao processar criptografia.');
+      setError(err.message || 'Falha ao processar autenticação da chave.');
     } finally {
       setIsLoading(false);
     }
@@ -97,6 +106,10 @@ export const PassphraseModal: React.FC<PassphraseModalProps> = ({
                 value={passphrase}
                 onChange={(e) => setPassphrase(e.target.value)}
                 placeholder={isNewUser ? 'Ex: Uma frase secreta ou senha forte' : 'Sua senha mestra'}
+                autoCapitalize="none"
+                autoCorrect="off"
+                spellCheck={false}
+                autoComplete="off"
                 className="w-full bg-slate-950/80 border border-slate-700/80 rounded-xl pl-10 pr-12 py-3 text-sm text-white placeholder-slate-400 focus:outline-none focus:border-emerald-500 focus:ring-1 focus:ring-emerald-500 transition-all"
               />
               <button
@@ -122,6 +135,10 @@ export const PassphraseModal: React.FC<PassphraseModalProps> = ({
                   value={confirmPassphrase}
                   onChange={(e) => setConfirmPassphrase(e.target.value)}
                   placeholder="Repita a frase secreta"
+                  autoCapitalize="none"
+                  autoCorrect="off"
+                  spellCheck={false}
+                  autoComplete="off"
                   className="w-full bg-slate-950/80 border border-slate-700/80 rounded-xl pl-10 pr-4 py-3 text-sm text-white placeholder-slate-400 focus:outline-none focus:border-emerald-500 focus:ring-1 focus:ring-emerald-500 transition-all"
                 />
               </div>
@@ -156,6 +173,45 @@ export const PassphraseModal: React.FC<PassphraseModalProps> = ({
             >
               Sair desta conta / Cancelar
             </button>
+
+            {!isNewUser && onResetVault && (
+              <div className="pt-2 text-center border-t border-slate-800">
+                {!showResetConfirm ? (
+                  <button
+                    type="button"
+                    onClick={() => setShowResetConfirm(true)}
+                    className="text-xs text-amber-400/90 hover:text-amber-300 underline font-medium cursor-pointer"
+                  >
+                    Esqueceu sua chave mestra? Redefinir cofre
+                  </button>
+                ) : (
+                  <div className="p-3 rounded-xl bg-amber-500/10 border border-amber-500/30 text-amber-300 text-xs space-y-2 text-left animate-fade-in">
+                    <p>
+                      ⚠️ <strong>Redefinir Cofre:</strong> Se você esqueceu a chave anterior, redefinir permitirá criar uma nova chave mestra para a sua conta.
+                    </p>
+                    <div className="flex gap-2 pt-1">
+                      <button
+                        type="button"
+                        onClick={() => {
+                          setShowResetConfirm(false);
+                          onResetVault();
+                        }}
+                        className="px-3 py-1.5 rounded-lg bg-amber-500 hover:bg-amber-400 text-slate-950 font-bold text-xs"
+                      >
+                        Confirmar e Criar Nova Chave
+                      </button>
+                      <button
+                        type="button"
+                        onClick={() => setShowResetConfirm(false)}
+                        className="px-3 py-1.5 rounded-lg bg-slate-800 hover:bg-slate-700 text-slate-300 text-xs"
+                      >
+                        Cancelar
+                      </button>
+                    </div>
+                  </div>
+                )}
+              </div>
+            )}
           </div>
         </form>
       </div>

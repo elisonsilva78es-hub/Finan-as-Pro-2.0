@@ -26,7 +26,7 @@ import {
 import confetti from 'canvas-confetti';
 import { 
   subscribeToAuth, 
-  logoutUser, 
+  logoutUser,
   type AppUser 
 } from './lib/authService';
 import { AuthModal } from './components/AuthModal';
@@ -44,7 +44,8 @@ import {
   unlockUserVault, 
   saveEncryptedMonthlyData, 
   loadEncryptedMonthlyData,
-  syncLocalRecordsToCloud
+  syncLocalRecordsToCloud,
+  resetUserVault
 } from './lib/storage';
 import type { 
   FinancialItem, 
@@ -158,32 +159,55 @@ export default function App() {
   const handlePassphraseUnlock = async (passphrase: string): Promise<boolean> => {
     if (!currentUser) return false;
 
-    if (isNewUser) {
+    let activeProfile = userProfile;
+    let shouldInitialize = isNewUser;
+
+    if (!activeProfile && !shouldInitialize) {
+      try {
+        const refreshed = await getOrCreateUserProfile(currentUser);
+        activeProfile = refreshed.profile;
+        if (!activeProfile && refreshed.isNewUser) {
+          shouldInitialize = true;
+          setIsNewUser(true);
+        }
+      } catch {
+        // fallback
+      }
+    }
+
+    if (shouldInitialize || !activeProfile) {
       // Create new security setup
       const { key } = await initializeUserSecurity(currentUser, passphrase);
       setCryptoKey(key);
       setShowPassphraseModal(false);
       setIsNewUser(false);
       showToast('Cofre criptografado com chave mestra com sucesso!');
-      // Sync any local records to Firestore
+      // Sync any local records to Cloud Server
       syncLocalRecordsToCloud(currentUser.uid, key).catch(console.error);
       // Trigger celebrate confetti
       confetti({ particleCount: 60, spread: 60, origin: { y: 0.7 } });
       return true;
-    } else if (userProfile) {
+    } else {
       // Unlock existing
-      const key = await unlockUserVault(currentUser, userProfile, passphrase);
+      const key = await unlockUserVault(currentUser, activeProfile, passphrase);
       if (key) {
         setCryptoKey(key);
         setShowPassphraseModal(false);
         showToast('Cofre desbloqueado com sucesso!');
-        // Sync any local records to Firestore
+        // Sync any local records to Cloud Server
         syncLocalRecordsToCloud(currentUser.uid, key).catch(console.error);
         return true;
       }
       return false;
     }
-    return false;
+  };
+
+  const handleResetVault = () => {
+    if (!currentUser) return;
+    resetUserVault(currentUser.uid);
+    setUserProfile(null);
+    setIsNewUser(true);
+    showToast('Cofre redefinido. Crie sua nova chave mestra.');
   };
 
   // Fetch monthly records when period changes or vault unlocked
@@ -236,10 +260,30 @@ export default function App() {
         await saveEncryptedMonthlyData(currentUser.uid, cryptoKey, periodKey, newData);
         setLastSyncedAt(new Date().toLocaleTimeString('pt-BR', { hour: '2-digit', minute: '2-digit' }));
       } catch (err) {
-        console.error('Failed to sync encrypted data to Firestore:', err);
+        console.error('Failed to sync encrypted data to Cloud Server:', err);
       } finally {
         setIsSyncing(false);
       }
+    }
+  };
+
+  // Manual Cloud Sync Trigger
+  const handleManualSync = async () => {
+    if (!currentUser || !cryptoKey) {
+      showToast('Desbloqueie o cofre para sincronizar na nuvem.');
+      return;
+    }
+    setIsSyncing(true);
+    try {
+      await saveEncryptedMonthlyData(currentUser.uid, cryptoKey, periodKey, dados);
+      await syncLocalRecordsToCloud(currentUser.uid, cryptoKey);
+      setLastSyncedAt(new Date().toLocaleTimeString('pt-BR', { hour: '2-digit', minute: '2-digit' }));
+      showToast('☁️ Todos os registros foram salvos e sincronizados na nuvem!');
+    } catch (err) {
+      console.warn('Manual sync error:', err);
+      showToast('Aviso ao sincronizar na nuvem. Verifique sua conexão.');
+    } finally {
+      setIsSyncing(false);
     }
   };
 
@@ -294,14 +338,12 @@ export default function App() {
   };
 
   const deleteItem = (type: 'rendas' | 'despesas' | 'economias', id: number) => {
-    if (confirm('Deseja excluir permanentemente este item?')) {
-      const nextData = {
-        ...dados,
-        [type]: dados[type].filter(i => i.id !== id)
-      };
-      persistData(nextData);
-      showToast('Item excluído.');
-    }
+    const nextData = {
+      ...dados,
+      [type]: dados[type].filter(i => i.id !== id)
+    };
+    persistData(nextData);
+    showToast('Item excluído com sucesso.');
   };
 
   const toggleStatus = (id: number) => {
@@ -335,7 +377,10 @@ export default function App() {
 
   const handleDragEnd = () => {
     setDraggedIndex(null);
-    persistData(dados);
+    setDados(prev => {
+      persistData(prev);
+      return prev;
+    });
   };
 
   // Export / WhatsApp integration
@@ -501,6 +546,7 @@ export default function App() {
         <PassphraseModal
           isNewUser={isNewUser}
           onUnlock={handlePassphraseUnlock}
+          onResetVault={handleResetVault}
           onSignOut={() => logoutUser()}
           userEmail={currentUser.email || currentUser.displayName || 'Usuário'}
         />
@@ -534,16 +580,15 @@ export default function App() {
             <button
               type="button"
               onClick={() => setShowDataTransferModal(true)}
-              className={`p-2 rounded-xl border transition-all flex items-center gap-1.5 cursor-pointer active:scale-95 shadow-sm ${
+              className={`p-2 rounded-xl border transition-all flex items-center justify-center cursor-pointer active:scale-95 shadow-sm ${
                 theme === 'dark' 
                   ? 'bg-slate-800 border-slate-700 text-blue-400 hover:bg-slate-700' 
                   : 'bg-slate-100 border-slate-200 text-blue-600 hover:bg-slate-200'
               }`}
-              title="Exportar e Carregar Dados (WhatsApp, Backup, Código)"
+              title="Exportar e Carregar Dados"
               aria-label="Exportar e Carregar Dados"
             >
               <ArrowUpDown className="w-4 h-4" />
-              <span className="hidden sm:inline text-xs font-semibold">Backup / Carregar</span>
             </button>
 
             <button
@@ -618,16 +663,24 @@ export default function App() {
             </select>
           </div>
 
-          <div className="flex items-center gap-1.5 text-[11px] text-slate-400">
-            {isSyncing ? (
-              <span className="flex items-center gap-1 text-blue-500 animate-pulse font-medium">
-                <RefreshCw className="w-3 h-3 animate-spin" /> Sincronizando
-              </span>
-            ) : (
-              <span className="flex items-center gap-1 text-emerald-500 font-medium">
-                <CloudCheck className="w-3.5 h-3.5" /> Nuvem E2EE
-              </span>
-            )}
+          <div className="flex items-center gap-1.5 text-[11px]">
+            <button
+              type="button"
+              onClick={handleManualSync}
+              disabled={isSyncing}
+              className="flex items-center gap-1 px-2 py-1 rounded-lg hover:bg-slate-100 dark:hover:bg-slate-800 transition-colors cursor-pointer active:scale-95"
+              title="Clique para sincronizar e salvar todos os registros na nuvem agora"
+            >
+              {isSyncing ? (
+                <span className="flex items-center gap-1 text-blue-500 animate-pulse font-semibold">
+                  <RefreshCw className="w-3 h-3 animate-spin" /> Salvando na nuvem...
+                </span>
+              ) : (
+                <span className="flex items-center gap-1 text-emerald-500 font-semibold">
+                  <CloudCheck className="w-3.5 h-3.5" /> Salvo na Nuvem {lastSyncedAt ? `(${lastSyncedAt})` : ''}
+                </span>
+              )}
+            </button>
           </div>
         </div>
       </header>
@@ -638,22 +691,6 @@ export default function App() {
         {/* TAB 1: RESUMO */}
         {activeTab === 'resumo' && (
           <div className="space-y-4 animate-fade-in">
-            {/* Compact Header Bar with Export / Carregar Icon Trigger */}
-            <div className="flex items-center justify-between px-1 text-xs">
-              <span className="text-slate-400 font-semibold tracking-wider uppercase text-[11px]">
-                Mês: {selectedMonth}/{selectedYear}
-              </span>
-              <button
-                type="button"
-                onClick={() => setShowDataTransferModal(true)}
-                className="flex items-center gap-1.5 px-3 py-1.5 rounded-xl bg-blue-600/10 hover:bg-blue-600/20 text-blue-500 font-semibold text-xs transition-all cursor-pointer border border-blue-500/20 active:scale-95 shadow-sm"
-                title="Clique para abrir as funções de Exportar e Carregar Dados"
-              >
-                <ArrowUpDown className="w-3.5 h-3.5" />
-                <span>Exportar / Carregar Dados</span>
-              </button>
-            </div>
-
             {/* Doughnut Chart Card */}
             <div className={`p-6 rounded-3xl border shadow-sm text-center flex flex-col items-center justify-center relative ${theme === 'dark' ? 'bg-slate-900/80 border-slate-800' : 'bg-white border-slate-200'}`}>
               <div className="relative w-[200px] h-[200px] flex items-center justify-center">

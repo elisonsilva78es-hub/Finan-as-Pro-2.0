@@ -61,24 +61,22 @@ export const AuthModal: React.FC<AuthModalProps> = ({ onSuccess }) => {
   };
 
   const handleGoogleSignIn = async (targetEmail?: string) => {
+    const emailToUse = (targetEmail || customGoogleEmail || '').trim();
+    if (!emailToUse) {
+      setShowGoogleCustomInput(true);
+      return;
+    }
     setError(null);
     setIsLoading(true);
     try {
-      const user = await signInGoogle(targetEmail);
+      const user = await signInGoogle(emailToUse);
       if (user) {
         onSuccess(user);
       }
     } catch (err: any) {
       console.error('Google Sign-in Error:', err);
-      if (err.code === 'auth/popup-blocked') {
-        setError('O navegador bloqueou a janela pop-up do Google. Por favor, permita pop-ups para este site ou utilize o campo abaixo.');
-        setShowGoogleCustomInput(true);
-      } else if (err.code === 'auth/popup-closed-by-user') {
-        setError('Login cancelado. Clique em "Continuar com e-mail do Google" para tentar novamente.');
-      } else {
-        setError(err.message || 'Falha ao autenticar com Google. Tente novamente.');
-        setShowGoogleCustomInput(true);
-      }
+      setError(err.message || 'Falha ao autenticar com e-mail Google. Tente novamente.');
+      setShowGoogleCustomInput(true);
     } finally {
       setIsLoading(false);
     }
@@ -286,6 +284,9 @@ export const AuthModal: React.FC<AuthModalProps> = ({ onSuccess }) => {
                     value={customGoogleEmail}
                     onChange={(e) => setCustomGoogleEmail(e.target.value)}
                     placeholder="seu.email@gmail.com"
+                    autoCapitalize="none"
+                    autoCorrect="off"
+                    spellCheck={false}
                     className="w-full bg-slate-900 border border-slate-700 rounded-xl px-3 py-2 text-xs text-white placeholder-slate-400 focus:outline-none focus:border-blue-500"
                   />
                   <button
@@ -355,6 +356,9 @@ export const AuthModal: React.FC<AuthModalProps> = ({ onSuccess }) => {
                   value={email}
                   onChange={(e) => setEmail(e.target.value)}
                   placeholder="exemplo@gmail.com"
+                  autoCapitalize="none"
+                  autoCorrect="off"
+                  spellCheck={false}
                   className="w-full bg-slate-950/60 border border-slate-700/80 rounded-xl pl-10 pr-4 py-3 text-sm text-white placeholder-slate-400 focus:outline-none focus:border-blue-500 focus:ring-1 focus:ring-blue-500 transition-all"
                 />
               </div>
@@ -384,6 +388,9 @@ export const AuthModal: React.FC<AuthModalProps> = ({ onSuccess }) => {
                     value={password}
                     onChange={(e) => setPassword(e.target.value)}
                     placeholder="••••••••"
+                    autoCapitalize="none"
+                    autoCorrect="off"
+                    spellCheck={false}
                     className="w-full bg-slate-950/60 border border-slate-700/80 rounded-xl pl-10 pr-11 py-3 text-sm text-white placeholder-slate-400 focus:outline-none focus:border-blue-500 focus:ring-1 focus:ring-blue-500 transition-all"
                   />
                   <button
@@ -410,6 +417,9 @@ export const AuthModal: React.FC<AuthModalProps> = ({ onSuccess }) => {
                     value={confirmPassword}
                     onChange={(e) => setConfirmPassword(e.target.value)}
                     placeholder="Repita a senha"
+                    autoCapitalize="none"
+                    autoCorrect="off"
+                    spellCheck={false}
                     className="w-full bg-slate-950/60 border border-slate-700/80 rounded-xl pl-10 pr-4 py-3 text-sm text-white placeholder-slate-400 focus:outline-none focus:border-blue-500 focus:ring-1 focus:ring-blue-500 transition-all"
                   />
                 </div>
@@ -432,6 +442,9 @@ export const AuthModal: React.FC<AuthModalProps> = ({ onSuccess }) => {
                       value={recoveryPin}
                       onChange={(e) => setRecoveryPin(e.target.value)}
                       placeholder="Ex: 839102"
+                      autoCapitalize="none"
+                      autoCorrect="off"
+                      spellCheck={false}
                       className="w-full bg-slate-950/60 border border-slate-700/80 rounded-xl pl-10 pr-4 py-3 text-sm text-white placeholder-slate-400 focus:outline-none focus:border-emerald-500 focus:ring-1 focus:ring-emerald-500 transition-all font-mono tracking-widest text-center"
                     />
                   </div>
@@ -449,6 +462,9 @@ export const AuthModal: React.FC<AuthModalProps> = ({ onSuccess }) => {
                       value={newPassword}
                       onChange={(e) => setNewPassword(e.target.value)}
                       placeholder="No mínimo 6 caracteres"
+                      autoCapitalize="none"
+                      autoCorrect="off"
+                      spellCheck={false}
                       className="w-full bg-slate-950/60 border border-slate-700/80 rounded-xl pl-10 pr-4 py-3 text-sm text-white placeholder-slate-400 focus:outline-none focus:border-emerald-500 focus:ring-1 focus:ring-emerald-500 transition-all"
                     />
                   </div>
@@ -466,6 +482,9 @@ export const AuthModal: React.FC<AuthModalProps> = ({ onSuccess }) => {
                       value={confirmNewPassword}
                       onChange={(e) => setConfirmNewPassword(e.target.value)}
                       placeholder="Repita a nova senha"
+                      autoCapitalize="none"
+                      autoCorrect="off"
+                      spellCheck={false}
                       className="w-full bg-slate-950/60 border border-slate-700/80 rounded-xl pl-10 pr-4 py-3 text-sm text-white placeholder-slate-400 focus:outline-none focus:border-emerald-500 focus:ring-1 focus:ring-emerald-500 transition-all"
                     />
                   </div>

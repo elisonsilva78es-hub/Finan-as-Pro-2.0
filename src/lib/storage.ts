@@ -3,71 +3,107 @@ import {
   generateRandomSalt, 
   encryptData, 
   decryptData, 
+  cleanPassphrase,
+  generateCandidatePassphrases,
   VERIFICATION_PHRASE,
   type EncryptedPayload
 } from './crypto';
+import { cloudFetch } from './authService';
 import type { MonthlyFinancialData, UserSecurityProfile } from '../types/finance';
-import { db } from './firebase';
-import { doc, getDoc, setDoc } from 'firebase/firestore';
 
 /**
- * Service for Zero-Knowledge E2EE Encrypted Storage with Firestore Cloud Persistence & Absolute User Isolation
+ * Service for Zero-Knowledge E2EE Encrypted Storage with Native Cloud Persistence
+ * Completely independent native architecture. Zero bureaucracy, 100% private.
  */
+
+// Helper to clean up any legacy iv:ciphertext format
+function normalizeProfileCredentials(profile: {
+  userId: string;
+  email?: string;
+  displayName?: string;
+  photoURL?: string;
+  e2eeSalt?: string;
+  e2eeIv?: string;
+  e2eeVerificationHash?: string;
+  createdAt?: string;
+  updatedAt?: string;
+}): UserSecurityProfile | null {
+  if (!profile.e2eeSalt) return null;
+
+  let iv = profile.e2eeIv || '';
+  let ciphertext = profile.e2eeVerificationHash || '';
+
+  if (ciphertext && ciphertext.includes(':')) {
+    const parts = ciphertext.split(':');
+    if (!iv) {
+      iv = parts[0];
+    }
+    ciphertext = parts[parts.length - 1];
+  }
+
+  if (!iv || !ciphertext) {
+    return null;
+  }
+
+  return {
+    userId: profile.userId,
+    email: profile.email || '',
+    displayName: profile.displayName || '',
+    photoURL: profile.photoURL || '',
+    e2eeSalt: profile.e2eeSalt,
+    e2eeIv: iv,
+    e2eeVerificationHash: ciphertext,
+    createdAt: profile.createdAt || new Date().toISOString(),
+    updatedAt: profile.updatedAt || new Date().toISOString(),
+  };
+}
 
 // Load or initialize user's cryptographic profile
 export async function getOrCreateUserProfile(user: { uid: string; email?: string; displayName?: string }): Promise<{
   profile: UserSecurityProfile | null;
   isNewUser: boolean;
 }> {
-  // 1. First, check Firestore cloud profile
+  // 1. Check Native Cloud profile first
   try {
-    const userRef = doc(db, 'users', user.uid);
-    const snap = await getDoc(userRef);
-    if (snap.exists()) {
-      const data = snap.data();
-      let e2eeIv = data.e2eeIv || '';
-      let e2eeVerificationHash = data.e2eeVerificationHash || '';
-
-      // If stored combined (iv:ciphertext)
-      if (!e2eeIv && e2eeVerificationHash.includes(':')) {
-        const parts = e2eeVerificationHash.split(':');
-        e2eeIv = parts[0];
-        e2eeVerificationHash = parts.slice(1).join(':');
+    const data = await cloudFetch<any>(`/api/profile/${user.uid}`);
+    if (data && data.e2eeSalt && (data.e2eeVerificationHash || data.e2eeIv)) {
+      const normalized = normalizeProfileCredentials(data);
+      if (normalized) {
+        // Cache locally for fast offline access
+        localStorage.setItem(`fin_profile_${user.uid}`, JSON.stringify(normalized));
+        return { profile: normalized, isNewUser: false };
       }
-
-      const cloudProfile: UserSecurityProfile = {
-        userId: data.userId || user.uid,
-        email: data.email || user.email || '',
-        displayName: data.displayName || user.displayName || '',
-        photoURL: data.photoURL || '',
-        e2eeSalt: data.e2eeSalt || '',
-        e2eeVerificationHash,
-        e2eeIv,
-        createdAt: data.createdAt || new Date().toISOString(),
-        updatedAt: data.updatedAt || new Date().toISOString(),
-      };
-
-      // Cache locally for fast offline access
-      localStorage.setItem(`fin_profile_${user.uid}`, JSON.stringify(cloudProfile));
-      return { profile: cloudProfile, isNewUser: false };
     }
   } catch (err) {
-    console.warn('Could not fetch user profile from Firestore (offline or unauthenticated):', err);
+    console.warn('Could not fetch user profile from Cloud Server:', err);
   }
 
   // 2. Fallback to local storage (device cache)
   const localProfileRaw = localStorage.getItem(`fin_profile_${user.uid}`);
   if (localProfileRaw) {
     try {
-      const profile = JSON.parse(localProfileRaw) as UserSecurityProfile;
-      return { profile, isNewUser: false };
+      const parsed = JSON.parse(localProfileRaw);
+      const normalized = normalizeProfileCredentials(parsed);
+      if (normalized) {
+        return { profile: normalized, isNewUser: false };
+      }
     } catch {
       // ignore corrupted local data
     }
   }
 
-  // 3. New user: Needs to establish their master passphrase and cryptographic salt
+  // 3. New user: Needs to establish their master passphrase
   return { profile: null, isNewUser: true };
+}
+
+// Reset vault
+export function resetUserVault(userId: string): void {
+  try {
+    localStorage.removeItem(`fin_profile_${userId}`);
+    cloudFetch(`/api/profile/${userId}/vault`, { method: 'DELETE' }).catch(console.warn);
+  } catch (err) {
+    console.warn('Could not reset user profile:', err);
+  }
 }
 
 // Initialize user security profile with salt and encrypted verification challenge
@@ -75,8 +111,9 @@ export async function initializeUserSecurity(
   user: { uid: string; email?: string; displayName?: string; photoURL?: string }, 
   passphrase: string
 ): Promise<{ key: CryptoKey; salt: string }> {
+  const cleaned = cleanPassphrase(passphrase) || passphrase.trim();
   const salt = generateRandomSalt(16);
-  const key = await deriveKeyFromPassphrase(passphrase, salt);
+  const key = await deriveKeyFromPassphrase(cleaned, salt);
 
   // Encrypt verification challenge with the user's master key
   const verificationPayload = await encryptData(key, { check: VERIFICATION_PHRASE });
@@ -96,46 +133,67 @@ export async function initializeUserSecurity(
   // 1. Store in user-isolated local secure vault
   localStorage.setItem(`fin_profile_${user.uid}`, JSON.stringify(profileData));
 
-  // 2. Persist to Firestore for cross-device synchronization
-  try {
-    const userRef = doc(db, 'users', user.uid);
-    await setDoc(userRef, {
+  // 2. Persist clean values to Cloud Server for cross-device access
+  await cloudFetch(`/api/profile/${user.uid}`, {
+    method: 'POST',
+    body: JSON.stringify({
       userId: user.uid,
       email: user.email || '',
       displayName: user.displayName || '',
       photoURL: user.photoURL || '',
       e2eeSalt: salt,
-      e2eeVerificationHash: `${verificationPayload.iv}:${verificationPayload.ciphertext}`,
-      updatedAt: new Date().toISOString(),
-    }, { merge: true });
-  } catch (err) {
-    console.warn('Could not persist security profile to Firestore:', err);
-  }
+      e2eeIv: verificationPayload.iv,
+      e2eeVerificationHash: verificationPayload.ciphertext,
+    }),
+  });
 
   return { key, salt };
 }
 
-// Unlock existing user's vault by verifying master passphrase
+// Unlock existing user's vault by verifying master passphrase with deterministic smart matching
 export async function unlockUserVault(
   _user: { uid: string },
   profile: UserSecurityProfile,
-  passphrase: string
+  rawPassphrase: string
 ): Promise<CryptoKey | null> {
   try {
-    const key = await deriveKeyFromPassphrase(passphrase, profile.e2eeSalt);
-    
-    // Verify by decrypting verification challenge
-    const decrypted = await decryptData(key, {
-      ciphertext: profile.e2eeVerificationHash,
-      iv: profile.e2eeIv,
-    });
-
-    if (decrypted && decrypted.check === VERIFICATION_PHRASE) {
-      return key;
+    if (!profile || !profile.e2eeSalt) {
+      return null;
     }
+
+    let iv = profile.e2eeIv || '';
+    let ciphertext = profile.e2eeVerificationHash || '';
+
+    // Handle combined iv:ciphertext format if iv is not isolated
+    if (ciphertext.includes(':')) {
+      const parts = ciphertext.split(':');
+      if (!iv) iv = parts[0];
+      ciphertext = parts[parts.length - 1];
+    }
+
+    if (!iv || !ciphertext) {
+      return null;
+    }
+
+    // Try candidates (cleaned, trimmed, first letter case variation, etc.)
+    const candidates = generateCandidatePassphrases(rawPassphrase);
+
+    for (const candidate of candidates) {
+      try {
+        const key = await deriveKeyFromPassphrase(candidate, profile.e2eeSalt);
+        const decrypted = await decryptData(key, { ciphertext, iv });
+
+        if (decrypted && decrypted.check === VERIFICATION_PHRASE) {
+          return key;
+        }
+      } catch {
+        // Continue to next candidate
+      }
+    }
+
     return null;
   } catch (err) {
-    console.error('Failed to unlock vault:', err);
+    console.warn('Vault unlock attempt could not be completed:', err);
     return null;
   }
 }
@@ -154,19 +212,18 @@ export async function saveEncryptedMonthlyData(
   localStorage.setItem(`fin_vault_${userId}_records_${monthYear}`, JSON.stringify(payload));
   localStorage.setItem(`fin_local_${userId}_${monthYear}`, JSON.stringify(data));
 
-  // 2. Persist encrypted ciphertext to Firestore (Cloud sync across devices)
+  // 2. Persist encrypted ciphertext to Cloud Server (Cloud sync across all devices)
   try {
-    const recordRef = doc(db, 'users', userId, 'records', monthYear);
-    await setDoc(recordRef, {
-      userId,
-      monthYear,
-      encryptedPayload: payload.ciphertext,
-      iv: payload.iv,
-      version: 2,
-      updatedAt: new Date().toISOString()
-    }, { merge: true });
+    await cloudFetch(`/api/records/${userId}/${monthYear}`, {
+      method: 'POST',
+      body: JSON.stringify({
+        encryptedPayload: payload.ciphertext,
+        iv: payload.iv,
+        version: 2,
+      }),
+    });
   } catch (err) {
-    console.warn('Could not save encrypted record to Firestore:', err);
+    console.warn('Could not save encrypted record to Cloud Server:', err);
   }
 }
 
@@ -176,28 +233,24 @@ export async function loadEncryptedMonthlyData(
   key: CryptoKey,
   monthYear: string
 ): Promise<MonthlyFinancialData | null> {
-  // 1. Try to load fresh encrypted payload from Firestore Cloud first
+  // 1. Try to load fresh encrypted payload from Native Cloud Server first
   try {
-    const recordRef = doc(db, 'users', userId, 'records', monthYear);
-    const snap = await getDoc(recordRef);
-    if (snap.exists()) {
-      const rec = snap.data();
-      if (rec.encryptedPayload && rec.iv) {
-        const payload: EncryptedPayload = {
-          ciphertext: rec.encryptedPayload,
-          iv: rec.iv
-        };
-        // Update local cache
-        localStorage.setItem(`fin_vault_${userId}_records_${monthYear}`, JSON.stringify(payload));
-        const decrypted = await decryptData(key, payload);
-        if (decrypted) {
-          localStorage.setItem(`fin_local_${userId}_${monthYear}`, JSON.stringify(decrypted));
-          return decrypted as MonthlyFinancialData;
-        }
+    const rec = await cloudFetch<any>(`/api/records/${userId}/${monthYear}`);
+    if (rec && rec.encryptedPayload && rec.iv) {
+      const payload: EncryptedPayload = {
+        ciphertext: rec.encryptedPayload,
+        iv: rec.iv,
+      };
+      // Update local cache
+      localStorage.setItem(`fin_vault_${userId}_records_${monthYear}`, JSON.stringify(payload));
+      const decrypted = await decryptData(key, payload);
+      if (decrypted) {
+        localStorage.setItem(`fin_local_${userId}_${monthYear}`, JSON.stringify(decrypted));
+        return decrypted as MonthlyFinancialData;
       }
     }
   } catch (err) {
-    console.warn('Could not read from Firestore (offline or fallback):', err);
+    console.warn('Could not read from Cloud Server (offline or fallback):', err);
   }
 
   // 2. Fallback to local encrypted vault in localStorage
@@ -210,7 +263,7 @@ export async function loadEncryptedMonthlyData(
         return decrypted as MonthlyFinancialData;
       }
     } catch (err) {
-      console.error('Failed to decrypt local monthly data with key:', err);
+      console.warn('Could not decrypt local monthly data with provided key:', err);
     }
   }
 
@@ -227,7 +280,7 @@ export async function loadEncryptedMonthlyData(
   return null;
 }
 
-// Automatically sync all local legacy / notebook records to Firestore
+// Automatically sync all local legacy / notebook records to Native Cloud Server
 export async function syncLocalRecordsToCloud(userId: string, key: CryptoKey): Promise<number> {
   let syncedCount = 0;
   try {
@@ -246,7 +299,6 @@ export async function syncLocalRecordsToCloud(userId: string, key: CryptoKey): P
           // ignore
         }
       } else if (storageKey.startsWith('fin_local_') && !storageKey.includes(userId)) {
-        // Legacy local record from previous turn or notebook UID
         const parts = storageKey.split('_');
         if (parts.length >= 4) {
           monthYear = `${parts[parts.length - 2]}_${parts[parts.length - 1]}`;

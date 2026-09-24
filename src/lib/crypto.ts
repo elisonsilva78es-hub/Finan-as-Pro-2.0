@@ -17,14 +17,69 @@ export function bufferToBase64(buffer: ArrayBuffer): string {
   return btoa(binary);
 }
 
-// Helper to convert Base64 string to Uint8Array
+// Helper to convert Base64 string to Uint8Array safely with padding & cleanups
 export function base64ToBuffer(base64: string): Uint8Array {
-  const binary = atob(base64);
+  if (!base64 || typeof base64 !== 'string') {
+    throw new Error('Base64 string vazia ou inválida');
+  }
+
+  // Remove any colons, spaces, newlines, zero-width characters
+  let clean = base64.trim().replace(/[^A-Za-z0-9+/=_-]/g, '').replace(/-/g, '+').replace(/_/g, '/');
+
+  // Ensure correct Base64 padding
+  while (clean.length % 4 !== 0) {
+    clean += '=';
+  }
+
+  const binary = atob(clean);
   const bytes = new Uint8Array(binary.length);
   for (let i = 0; i < binary.length; i++) {
     bytes[i] = binary.charCodeAt(i);
   }
   return bytes;
+}
+
+// Clean passphrase from mobile artifacts (zero-width spaces, soft hyphens, non-breaking spaces)
+export function cleanPassphrase(input: string): string {
+  if (!input || typeof input !== 'string') return '';
+  return input
+    .normalize('NFKC')
+    .replace(/[\u200B-\u200D\uFEFF\u00A0]/g, ' ') // convert zero-width & non-breaking spaces
+    .trim();
+}
+
+// Generate smart variations to handle mobile auto-capitalization and trailing spaces
+export function generateCandidatePassphrases(rawInput: string): string[] {
+  const candidates: string[] = [];
+  const cleaned = cleanPassphrase(rawInput);
+
+  if (cleaned) {
+    candidates.push(cleaned);
+  }
+
+  if (rawInput && rawInput !== cleaned) {
+    candidates.push(rawInput);
+  }
+
+  // Invert case of first character (mobile keyboards often auto-capitalize the first letter)
+  if (cleaned.length > 0) {
+    const firstChar = cleaned[0];
+    const invertedFirst =
+      firstChar === firstChar.toUpperCase()
+        ? firstChar.toLowerCase() + cleaned.slice(1)
+        : firstChar.toUpperCase() + cleaned.slice(1);
+
+    if (!candidates.includes(invertedFirst)) {
+      candidates.push(invertedFirst);
+    }
+
+    const lower = cleaned.toLowerCase();
+    if (!candidates.includes(lower)) {
+      candidates.push(lower);
+    }
+  }
+
+  return candidates;
 }
 
 // Generate random cryptographic salt

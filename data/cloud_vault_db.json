@@ -1,0 +1,16 @@
+{
+  "users": {
+    "usr_g_3c194fd4dec0e0af": {
+      "userId": "usr_g_3c194fd4dec0e0af",
+      "email": "elison.silva78.es@gmail.com",
+      "displayName": "elison.silva78.es",
+      "provider": "google",
+      "passwordHash": "Mud/XYelUh9vVgFHl8DO60nZRfRZSiBoN65vnwpcCI4=",
+      "accountSalt": "7pavnsMbaDLAeCrZ1T3CSw==",
+      "recoveryPin": "153414",
+      "updatedAt": "2026-09-24T14:39:35.019Z"
+    }
+  },
+  "records": {},
+  "sessions": {}
+}
