@@ -231,6 +231,28 @@ async function verifyGoogleCredential(credential: string): Promise<{
   return null;
 }
 
+// Standardized JSON response helpers
+function sendError(res: express.Response, statusCode: number, message: string, code = 'ERROR') {
+  res.setHeader('Content-Type', 'application/json; charset=utf-8');
+  return res.status(statusCode).json({
+    success: false,
+    message,
+    error: {
+      code,
+      message,
+    },
+  });
+}
+
+function sendSuccess(res: express.Response, data: Record<string, any> = {}, message?: string) {
+  res.setHeader('Content-Type', 'application/json; charset=utf-8');
+  return res.status(200).json({
+    success: true,
+    ...(message ? { message } : {}),
+    ...data,
+  });
+}
+
 async function startServer() {
   const app = express();
   const PORT = 3000;
@@ -248,20 +270,20 @@ async function startServer() {
   const requireAuth = (req: express.Request, res: express.Response, next: express.NextFunction) => {
     const authHeader = req.headers.authorization;
     if (!authHeader || !authHeader.startsWith('Bearer ')) {
-      return res.status(401).json({ error: 'Acesso não autorizado. Faça login para continuar.' });
+      return sendError(res, 401, 'Acesso não autorizado. Faça login para continuar.', 'UNAUTHORIZED');
     }
 
     const token = authHeader.substring(7).trim();
     const session = dbCache.sessions?.[token];
 
     if (!session) {
-      return res.status(401).json({ error: 'Sessão inválida ou encerrada. Por favor, acesse sua conta novamente.' });
+      return sendError(res, 401, 'Sessão inválida ou encerrada. Por favor, acesse sua conta novamente.', 'INVALID_SESSION');
     }
 
     if (Date.now() > session.expiresAt) {
       delete dbCache.sessions[token];
       saveDatabase();
-      return res.status(401).json({ error: 'Sessão expirada por segurança. Por favor, acesse sua conta novamente.' });
+      return sendError(res, 401, 'Sessão expirada por segurança. Por favor, acesse sua conta novamente.', 'SESSION_EXPIRED');
     }
 
     // Attach verified user info to request
@@ -282,7 +304,7 @@ async function startServer() {
     const sessionUserId = (req as any).session?.userId;
 
     if (sessionUserId !== requestedUserId) {
-      return res.status(403).json({ error: 'Acesso negado aos dados de outro usuário.' });
+      return sendError(res, 403, 'Acesso negado aos dados de outro usuário.', 'FORBIDDEN');
     }
 
     next();
@@ -290,7 +312,7 @@ async function startServer() {
 
   // API Health check
   app.get('/api/health', (_req, res) => {
-    res.json({
+    sendSuccess(res, {
       status: 'ok',
       time: new Date().toISOString(),
       totalUsers: Object.keys(dbCache.users).length,
@@ -303,23 +325,26 @@ async function startServer() {
     const ip = getClientIp(req);
     const rateCheck = checkRateLimit(`register_${ip}`);
     if (rateCheck.blocked) {
-      return res.status(429).json({ error: rateCheck.message });
+      return sendError(res, 429, rateCheck.message || 'Muitas tentativas. Aguarde 5 minutos.', 'RATE_LIMIT');
     }
 
     const { email, password, displayName } = req.body;
     if (!email || typeof email !== 'string' || !email.includes('@')) {
-      return res.status(400).json({ error: 'Por favor, informe um endereço de e-mail válido.' });
+      return sendError(res, 400, 'Por favor, informe um endereço de e-mail válido.', 'INVALID_EMAIL');
     }
     if (!password || typeof password !== 'string' || password.length < 6) {
-      return res.status(400).json({ error: 'A senha deve conter no mínimo 6 caracteres.' });
+      return sendError(res, 400, 'A senha deve conter no mínimo 6 caracteres.', 'WEAK_PASSWORD');
     }
 
     const normalizedEmail = email.trim().toLowerCase();
     const existing = findUserByEmail(normalizedEmail);
     if (existing) {
-      return res.status(409).json({
-        error: 'Este e-mail já está cadastrado. Acesse a aba "Entrar" com sua senha ou use a recuperação.',
-      });
+      return sendError(
+        res,
+        409,
+        'Este e-mail já está cadastrado. Acesse a aba "Entrar" com sua senha ou use a recuperação.',
+        'EMAIL_EXISTS'
+      );
     }
 
     const userId = getUserIdForEmail(normalizedEmail);
@@ -358,8 +383,7 @@ async function startServer() {
     saveDatabase();
     clearRateLimit(`register_${ip}`);
 
-    res.json({
-      success: true,
+    sendSuccess(res, {
       token,
       expiresAt,
       recoveryPin,
@@ -369,7 +393,7 @@ async function startServer() {
         displayName: newUser.displayName,
         provider: 'email',
       },
-    });
+    }, 'Conta criada com sucesso.');
   });
 
   // 2. LOGIN WITH EMAIL & PASSWORD (Server-side PBKDF2 verification & Rate Limiting)
@@ -378,20 +402,20 @@ async function startServer() {
     const { email, password } = req.body;
 
     if (!email || !password) {
-      return res.status(400).json({ error: 'Por favor, informe e-mail e senha.' });
+      return sendError(res, 400, 'Por favor, informe e-mail e senha.', 'MISSING_FIELDS');
     }
 
     const normalizedEmail = email.trim().toLowerCase();
     const rateLimitKey = `login_${normalizedEmail}_${ip}`;
     const rateCheck = checkRateLimit(rateLimitKey);
     if (rateCheck.blocked) {
-      return res.status(429).json({ error: rateCheck.message });
+      return sendError(res, 429, rateCheck.message || 'Muitas tentativas. Aguarde 5 minutos.', 'RATE_LIMIT');
     }
 
     const user = findUserByEmail(normalizedEmail);
     if (!user || !user.accountSalt || !user.passwordHash) {
       recordFailedAttempt(rateLimitKey);
-      return res.status(401).json({ error: 'E-mail ou senha incorretos. Verifique suas credenciais.' });
+      return sendError(res, 401, 'E-mail ou senha incorretos. Verifique suas credenciais.', 'INVALID_CREDENTIALS');
     }
 
     // Verify PBKDF2 hash
@@ -405,7 +429,7 @@ async function startServer() {
 
     if (!isValid) {
       recordFailedAttempt(rateLimitKey);
-      return res.status(401).json({ error: 'E-mail ou senha incorretos. Verifique suas credenciais.' });
+      return sendError(res, 401, 'E-mail ou senha incorretos. Verifique suas credenciais.', 'INVALID_CREDENTIALS');
     }
 
     // Password is valid - reset failed attempts
@@ -427,8 +451,7 @@ async function startServer() {
     dbCache.sessions[token] = session;
     saveDatabase();
 
-    res.json({
-      success: true,
+    sendSuccess(res, {
       token,
       expiresAt,
       user: {
@@ -437,7 +460,7 @@ async function startServer() {
         displayName: user.displayName,
         provider: user.provider,
       },
-    });
+    }, 'Login realizado com sucesso.');
   });
 
   // 3. GOOGLE SIGN-IN & REGISTRATION (Official Google Identity Verification)
@@ -451,7 +474,7 @@ async function startServer() {
       if (credential && typeof credential === 'string') {
         const verified = await verifyGoogleCredential(credential);
         if (!verified) {
-          return res.status(401).json({ error: 'Credencial do Google inválida ou expirada. Tente novamente.' });
+          return sendError(res, 401, 'Credencial do Google inválida ou expirada. Tente novamente.', 'INVALID_GOOGLE_TOKEN');
         }
         userEmail = verified.email;
         userName = verified.displayName;
@@ -460,7 +483,7 @@ async function startServer() {
         userEmail = email.trim().toLowerCase();
         userName = (displayName && displayName.trim()) || userEmail.split('@')[0];
       } else {
-        return res.status(400).json({ error: 'E-mail ou credencial Google inválida.' });
+        return sendError(res, 400, 'Por favor, informe uma conta Google válida para autenticação.', 'INVALID_GOOGLE_INPUT');
       }
 
       const normalizedEmail = userEmail.trim().toLowerCase();
@@ -515,21 +538,20 @@ async function startServer() {
       dbCache.sessions[token] = session;
       saveDatabase();
 
-      res.json({
-        success: true,
+      sendSuccess(res, {
         token,
         expiresAt,
         user: {
           uid: user.userId,
           email: user.email,
           displayName: user.displayName,
-          photoURL: (user as any).photoURL || '',
+          photoURL: user.photoURL || '',
           provider: 'google',
         },
-      });
+      }, 'Autenticação Google concluída com sucesso.');
     } catch (err: any) {
       console.error('Error in /api/auth/google:', err);
-      res.status(500).json({ error: 'Falha ao autenticar com o Google. Tente novamente.' });
+      sendError(res, 500, 'Falha ao autenticar com o Google. Tente novamente em instantes.', 'GOOGLE_AUTH_ERROR');
     }
   });
 
@@ -539,15 +561,15 @@ async function startServer() {
     const user = dbCache.users[session.userId];
 
     if (!user) {
-      return res.status(404).json({ error: 'Conta de usuário não encontrada.' });
+      return sendError(res, 404, 'Conta de usuário não encontrada.', 'USER_NOT_FOUND');
     }
 
-    res.json({
-      success: true,
+    sendSuccess(res, {
       user: {
         uid: user.userId,
         email: user.email,
         displayName: user.displayName,
+        photoURL: user.photoURL || '',
         provider: user.provider,
       },
       expiresAt: session.expiresAt,
@@ -564,22 +586,22 @@ async function startServer() {
         saveDatabase();
       }
     }
-    res.json({ success: true, message: 'Sessão encerrada.' });
+    sendSuccess(res, {}, 'Sessão encerrada com sucesso.');
   });
 
   // 6. CHECK ACCOUNT FOR RESET
   app.post('/api/auth/check-account', (req, res) => {
     const { email } = req.body;
-    if (!email) return res.status(400).json({ error: 'E-mail obrigatório.' });
+    if (!email) return sendError(res, 400, 'E-mail obrigatório.', 'MISSING_EMAIL');
 
     const normalized = email.trim().toLowerCase();
     const user = findUserByEmail(normalized);
 
     if (!user) {
-      return res.status(404).json({ error: 'Nenhuma conta encontrada com este e-mail.' });
+      return sendError(res, 404, 'Nenhuma conta encontrada com este e-mail.', 'USER_NOT_FOUND');
     }
 
-    res.json({
+    sendSuccess(res, {
       exists: true,
       displayName: user.displayName,
       pinHint: user.recoveryPin || '',
@@ -590,21 +612,21 @@ async function startServer() {
   app.post('/api/auth/reset-password', (req, res) => {
     const { email, recoveryPin, newPassword } = req.body;
     if (!email || !recoveryPin || !newPassword) {
-      return res.status(400).json({ error: 'Campos obrigatórios ausentes.' });
+      return sendError(res, 400, 'Campos obrigatórios ausentes.', 'MISSING_FIELDS');
     }
     if (newPassword.length < 6) {
-      return res.status(400).json({ error: 'A nova senha deve ter no mínimo 6 caracteres.' });
+      return sendError(res, 400, 'A nova senha deve ter no mínimo 6 caracteres.', 'WEAK_PASSWORD');
     }
 
     const normalized = email.trim().toLowerCase();
     const user = findUserByEmail(normalized);
 
     if (!user) {
-      return res.status(404).json({ error: 'Conta não encontrada.' });
+      return sendError(res, 404, 'Conta não encontrada.', 'USER_NOT_FOUND');
     }
 
     if (user.recoveryPin?.trim() !== recoveryPin.trim()) {
-      return res.status(401).json({ error: 'Código PIN de segurança incorreto.' });
+      return sendError(res, 401, 'Código PIN de segurança incorreto.', 'INVALID_PIN');
     }
 
     const newSalt = generateSalt(16);
@@ -613,7 +635,7 @@ async function startServer() {
     user.updatedAt = new Date().toISOString();
 
     saveDatabase();
-    res.json({ success: true, message: 'Senha atualizada com sucesso! Acesse a aba "Entrar".' });
+    sendSuccess(res, {}, 'Senha atualizada com sucesso! Acesse a aba "Entrar".');
   });
 
   // 8. GET USER CRYPTOGRAPHIC SECURITY PROFILE (E2EE)
@@ -621,10 +643,10 @@ async function startServer() {
     const { userId } = req.params;
     const user = dbCache.users[userId];
     if (!user) {
-      return res.status(404).json({ error: 'Perfil de segurança não encontrado.' });
+      return sendError(res, 404, 'Perfil de segurança não encontrado.', 'NOT_FOUND');
     }
 
-    res.json({
+    sendSuccess(res, {
       userId: user.userId,
       email: user.email,
       displayName: user.displayName,
@@ -641,7 +663,7 @@ async function startServer() {
     const { e2eeSalt, e2eeIv, e2eeVerificationHash } = req.body;
 
     if (!dbCache.users[userId]) {
-      return res.status(404).json({ error: 'Usuário não encontrado.' });
+      return sendError(res, 404, 'Usuário não encontrado.', 'USER_NOT_FOUND');
     }
 
     const user = dbCache.users[userId];
@@ -661,8 +683,7 @@ async function startServer() {
     user.updatedAt = new Date().toISOString();
     saveDatabase();
 
-    res.json({
-      success: true,
+    sendSuccess(res, {
       profile: {
         userId: user.userId,
         email: user.email,
@@ -687,7 +708,7 @@ async function startServer() {
       delete dbCache.records[userId];
     }
     saveDatabase();
-    res.json({ success: true, message: 'Cofre redefinido com sucesso.' });
+    sendSuccess(res, {}, 'Cofre redefinido com sucesso.');
   });
 
   // 11. GET MONTHLY ENCRYPTED RECORD
@@ -695,8 +716,9 @@ async function startServer() {
     const { userId, monthYear } = req.params;
     const userRecords = dbCache.records[userId];
     if (!userRecords || !userRecords[monthYear]) {
-      return res.status(404).json({ error: 'Nenhum registro para este período.' });
+      return sendError(res, 404, 'Nenhum registro para este período.', 'NOT_FOUND');
     }
+    res.setHeader('Content-Type', 'application/json; charset=utf-8');
     res.json(userRecords[monthYear]);
   });
 
@@ -706,7 +728,7 @@ async function startServer() {
     const { encryptedPayload, iv, version } = req.body;
 
     if (!encryptedPayload || !iv) {
-      return res.status(400).json({ error: 'Carga criptografada inválida.' });
+      return sendError(res, 400, 'Carga criptografada inválida.', 'INVALID_PAYLOAD');
     }
 
     if (!dbCache.records[userId]) {
@@ -724,13 +746,14 @@ async function startServer() {
 
     dbCache.records[userId][monthYear] = record;
     saveDatabase();
-    res.json({ success: true, record });
+    sendSuccess(res, { record });
   });
 
   // 13. GET ALL USER RECORDS
   app.get('/api/records/:userId', requireAuth, requireUserMatch, (req, res) => {
     const { userId } = req.params;
     const userRecords = dbCache.records[userId] || {};
+    res.setHeader('Content-Type', 'application/json; charset=utf-8');
     res.json(userRecords);
   });
 
@@ -759,25 +782,23 @@ async function startServer() {
       saveDatabase();
     }
 
-    res.json({
-      success: true,
+    sendSuccess(res, {
       count: Object.keys(dbCache.records[userId] || {}).length,
     });
   });
 
   // Explicit JSON 404 handler for any unmatched /api/* routes
   app.all('/api/*', (req, res) => {
-    res.status(404).json({
-      error: `Endpoint da API não encontrado: ${req.method} ${req.path}`,
-    });
+    sendError(res, 404, `Endpoint da API não encontrado: ${req.method} ${req.path}`, 'ROUTE_NOT_FOUND');
   });
 
-  // Explicit JSON error handler for all /api routes
-  app.use('/api', (err: any, _req: express.Request, res: express.Response, _next: express.NextFunction) => {
-    console.error('API Error:', err);
-    res.status(err.status || 500).json({
-      error: err.message || 'Erro interno no servidor.',
-    });
+  // Explicit error handler: guarantees JSON for all /api routes
+  app.use((err: any, req: express.Request, res: express.Response, _next: express.NextFunction) => {
+    console.error('Server error handler:', err);
+    if (req.path.startsWith('/api')) {
+      return sendError(res, err.status || 500, err.message || 'Erro interno no servidor.', 'INTERNAL_ERROR');
+    }
+    res.status(err.status || 500).send('Internal Server Error');
   });
 
   // Static files or Vite middleware

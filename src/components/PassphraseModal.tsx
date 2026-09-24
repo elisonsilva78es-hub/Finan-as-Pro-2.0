@@ -1,5 +1,6 @@
 import React, { useState } from 'react';
 import { KeyRound, ShieldCheck, Lock, AlertCircle, Sparkles, CheckCircle2 } from 'lucide-react';
+import { extractErrorMessage } from '../lib/errorHandler';
 
 interface PassphraseModalProps {
   isNewUser: boolean;
@@ -51,7 +52,7 @@ export const PassphraseModal: React.FC<PassphraseModalProps> = ({
       }
     } catch (err: any) {
       console.error(err);
-      setError(err.message || 'Falha ao processar autenticação da chave.');
+      setError(extractErrorMessage(err, 'Falha ao processar autenticação da chave.'));
     } finally {
       setIsLoading(false);
     }

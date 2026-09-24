@@ -1,3 +1,5 @@
+import { extractErrorMessage } from './errorHandler';
+
 export interface AppUser {
   uid: string;
   email: string;
@@ -72,14 +74,16 @@ export interface ApiResponse<T> {
   success: boolean;
   data?: T;
   error?: string;
+  message?: string;
 }
 
 /**
  * Universal safe API fetch:
- * - Guarantees headers and content-type verification
- * - Never calls res.json() on non-JSON content
+ * - Guarantees headers and Content-Type inspection
+ * - Never blindly executes res.json() on HTML or raw text
  * - Eliminates "Unexpected token 'T', The page..." JSON syntax errors
- * - Translates HTTP error codes (404, 429, 500) into clear Portuguese messages
+ * - Eliminates "[object Object]" by extracting verified human-friendly strings
+ * - Handles 401, 403, 404, 429, 500 cleanly
  */
 export async function safeApiCall<T>(
   endpoint: string,
@@ -112,7 +116,7 @@ export async function safeApiCall<T>(
         console.warn(`JSON parse error on ${endpoint}:`, jsonErr);
       }
     } else {
-      // Non-JSON response (HTML, text, or proxy error)
+      // Non-JSON response (HTML, proxy 502/503 page, or text)
       const rawText = await res.text().catch(() => '');
       console.warn(`Non-JSON response from ${endpoint} (Status ${res.status}):`, rawText.substring(0, 100));
     }
@@ -125,29 +129,43 @@ export async function safeApiCall<T>(
         }
       }
 
-      const errorMessage =
-        parsed?.error ||
-        (res.status === 404
+      const defaultFallback =
+        res.status === 404
           ? 'Serviço de autenticação temporariamente indisponível (404).'
           : res.status === 429
-          ? parsed?.error || 'Muitas tentativas sem sucesso. Aguarde 5 minutos antes de tentar novamente.'
+          ? 'Muitas tentativas sem sucesso. Aguarde 5 minutos antes de tentar novamente.'
           : res.status >= 500
           ? 'Servidor temporariamente indisponível. Tente novamente em instantes.'
-          : `Erro de autenticação (${res.status}).`);
+          : `Erro na requisição (${res.status}).`;
 
+      const errorMessage = extractErrorMessage(parsed, defaultFallback);
       return { success: false, error: errorMessage };
     }
 
     if (!parsed) {
-      return { success: false, error: 'Resposta vazia ou inválida do servidor.' };
+      return {
+        success: false,
+        error: 'O servidor não retornou dados no formato esperado. Tente novamente.',
+      };
     }
 
-    return { success: true, data: parsed as T };
+    if (parsed.success === false) {
+      return {
+        success: false,
+        error: extractErrorMessage(parsed, 'Falha ao processar solicitação.'),
+      };
+    }
+
+    return {
+      success: true,
+      data: parsed as T,
+      message: typeof parsed.message === 'string' ? parsed.message : undefined,
+    };
   } catch (err: any) {
     console.error(`Fetch failure on ${endpoint}:`, err);
     return {
       success: false,
-      error: 'Não foi possível conectar ao servidor. Verifique sua conexão com a internet.',
+      error: extractErrorMessage(err, 'Não foi possível conectar ao servidor. Verifique sua conexão com a internet.'),
     };
   }
 }
@@ -202,7 +220,7 @@ export interface GoogleAuthOptions {
   displayName?: string;
 }
 
-// Google Sign In & Registration (Integrated with Google Identity & Cloud Architecture)
+// Google Sign In & Registration (Official Google Identity & Cloud Architecture)
 export async function signInGoogle(options: GoogleAuthOptions | string, providedName?: string): Promise<AppUser> {
   let credential = '';
   let email = '';
@@ -240,7 +258,7 @@ export async function signInGoogle(options: GoogleAuthOptions | string, provided
   });
 
   if (!res.success || !res.data) {
-    throw new Error(res.error || 'Falha ao autenticar com a conta Google.');
+    throw new Error(extractErrorMessage(res.error, 'Falha ao autenticar com a conta Google.'));
   }
 
   const appUser: AppUser = {
@@ -286,7 +304,7 @@ export async function registerWithEmail(
   });
 
   if (!res.success || !res.data) {
-    throw new Error(res.error || 'Falha ao realizar cadastro.');
+    throw new Error(extractErrorMessage(res.error, 'Falha ao realizar cadastro. Verifique os dados.'));
   }
 
   const appUser: AppUser = {
@@ -324,7 +342,7 @@ export async function loginWithEmail(email: string, password: string): Promise<A
   });
 
   if (!res.success || !res.data) {
-    throw new Error(res.error || 'E-mail ou senha incorretos.');
+    throw new Error(extractErrorMessage(res.error, 'E-mail ou senha incorretos.'));
   }
 
   const appUser: AppUser = {
@@ -356,7 +374,7 @@ export async function checkAccountForReset(email: string): Promise<{
   });
 
   if (!res.success || !res.data) {
-    throw new Error(res.error || 'Nenhuma conta cadastrada com este e-mail.');
+    throw new Error(extractErrorMessage(res.error, 'Nenhuma conta cadastrada com este e-mail.'));
   }
 
   return {
@@ -391,7 +409,7 @@ export async function resetPasswordWithPin(
   });
 
   if (!res.success || !res.data) {
-    throw new Error(res.error || 'Falha ao redefinir a senha.');
+    throw new Error(extractErrorMessage(res.error, 'Falha ao redefinir a senha. Verifique o código PIN.'));
   }
 
   return {

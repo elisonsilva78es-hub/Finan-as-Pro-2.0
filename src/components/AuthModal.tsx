@@ -23,6 +23,7 @@ import {
   resetPasswordWithPin,
   type AppUser 
 } from '../lib/authService';
+import { extractErrorMessage } from '../lib/errorHandler';
 import type { AuthMode } from '../types/finance';
 
 interface AuthModalProps {
@@ -52,38 +53,69 @@ export const AuthModal: React.FC<AuthModalProps> = ({ onSuccess }) => {
 
   // Initialize official Google Identity Services if client is available
   useEffect(() => {
-    if (typeof window !== 'undefined' && (window as any).google?.accounts?.id) {
-      try {
-        const clientId =
-          (import.meta as any).env?.VITE_GOOGLE_CLIENT_ID ||
-          '10312254122492-auth.apps.googleusercontent.com';
+    const initGsi = () => {
+      if (typeof window !== 'undefined' && (window as any).google?.accounts?.id) {
+        try {
+          const clientId =
+            (import.meta as any).env?.VITE_GOOGLE_CLIENT_ID ||
+            '10312254122492-auth.apps.googleusercontent.com';
 
-        (window as any).google.accounts.id.initialize({
-          client_id: clientId,
-          callback: async (response: any) => {
-            if (response?.credential) {
-              setIsLoading(true);
-              setError(null);
-              try {
-                const user = await signInGoogle({ credential: response.credential });
-                if (user) {
-                  onSuccess(user);
+          (window as any).google.accounts.id.initialize({
+            client_id: clientId,
+            callback: async (response: any) => {
+              if (response?.credential) {
+                setIsLoading(true);
+                setError(null);
+                try {
+                  const user = await signInGoogle({ credential: response.credential });
+                  if (user) {
+                    onSuccess(user);
+                  }
+                } catch (err: any) {
+                  console.error('Google Credential Login Error:', err);
+                  setError(extractErrorMessage(err, 'Falha ao autenticar com a conta Google.'));
+                  setShowGoogleCustomInput(true);
+                } finally {
+                  setIsLoading(false);
                 }
-              } catch (err: any) {
-                console.error('Google Credential Login Error:', err);
-                setError(err.message || 'Falha ao autenticar com a conta Google.');
-                setShowGoogleCustomInput(true);
-              } finally {
-                setIsLoading(false);
               }
-            }
-          },
-          auto_select: false,
-          cancel_on_tap_outside: true,
-        });
-      } catch (err) {
-        console.warn('GIS initialization check:', err);
+            },
+            auto_select: false,
+            cancel_on_tap_outside: true,
+          });
+
+          // Render official button if container exists
+          const btnContainer = document.getElementById('googleOfficialBtn');
+          if (btnContainer) {
+            btnContainer.innerHTML = '';
+            (window as any).google.accounts.id.renderButton(btnContainer, {
+              theme: 'outline',
+              size: 'large',
+              text: mode === 'register' ? 'signup_with' : 'signin_with',
+              shape: 'rectangular',
+              width: 360,
+              locale: 'pt-BR',
+            });
+          }
+          return true;
+        } catch (err) {
+          console.warn('GIS initialization check:', err);
+        }
       }
+      return false;
+    };
+
+    if (!initGsi()) {
+      const interval = setInterval(() => {
+        if (initGsi()) {
+          clearInterval(interval);
+        }
+      }, 500);
+      const timeout = setTimeout(() => clearInterval(interval), 4000);
+      return () => {
+        clearInterval(interval);
+        clearTimeout(timeout);
+      };
     }
   }, [mode]);
 
@@ -103,6 +135,10 @@ export const AuthModal: React.FC<AuthModalProps> = ({ onSuccess }) => {
 
     // If an explicit email was provided or typed in the Google input
     if (emailToUse) {
+      if (!emailToUse.includes('@')) {
+        setError('Por favor, informe um endereço de e-mail válido.');
+        return;
+      }
       setIsLoading(true);
       try {
         const user = await signInGoogle({ email: emailToUse });
@@ -111,12 +147,61 @@ export const AuthModal: React.FC<AuthModalProps> = ({ onSuccess }) => {
         }
       } catch (err: any) {
         console.error('Google Sign-in Error:', err);
-        setError(err.message || 'Falha ao autenticar com e-mail Google. Tente novamente.');
+        setError(extractErrorMessage(err, 'Falha ao autenticar com e-mail Google. Tente novamente.'));
         setShowGoogleCustomInput(true);
       } finally {
         setIsLoading(false);
       }
       return;
+    }
+
+    // Try Google OAuth2 token client if available
+    if (typeof window !== 'undefined' && (window as any).google?.accounts?.oauth2) {
+      try {
+        const clientId =
+          (import.meta as any).env?.VITE_GOOGLE_CLIENT_ID ||
+          '10312254122492-auth.apps.googleusercontent.com';
+
+        const tokenClient = (window as any).google.accounts.oauth2.initTokenClient({
+          client_id: clientId,
+          scope: 'email profile openid',
+          callback: async (tokenResponse: any) => {
+            if (tokenResponse?.access_token) {
+              setIsLoading(true);
+              try {
+                const userInfoRes = await fetch('https://www.googleapis.com/oauth2/v3/userinfo', {
+                  headers: { Authorization: `Bearer ${tokenResponse.access_token}` },
+                });
+                if (userInfoRes.ok) {
+                  const googleUser = await userInfoRes.json();
+                  if (googleUser.email) {
+                    const user = await signInGoogle({
+                      email: googleUser.email,
+                      displayName: googleUser.name || googleUser.email.split('@')[0],
+                    });
+                    if (user) {
+                      onSuccess(user);
+                      return;
+                    }
+                  }
+                }
+              } catch (oauthErr) {
+                console.warn('Google userinfo fetch failed:', oauthErr);
+              } finally {
+                setIsLoading(false);
+              }
+            }
+          },
+          error_callback: (err: any) => {
+            console.warn('OAuth token client error:', err);
+            setShowGoogleCustomInput(true);
+          },
+        });
+        tokenClient.requestAccessToken();
+        return;
+      } catch (err) {
+        console.warn('Google oauth2 client failed:', err);
+      }
     }
 
     // Attempt official Google One Tap / Account Chooser if available in browser
@@ -135,7 +220,7 @@ export const AuthModal: React.FC<AuthModalProps> = ({ onSuccess }) => {
           if (!promptHandled) {
             setShowGoogleCustomInput(true);
           }
-        }, 300);
+        }, 400);
         return;
       } catch (err) {
         console.warn('GIS prompt error:', err);
@@ -151,7 +236,7 @@ export const AuthModal: React.FC<AuthModalProps> = ({ onSuccess }) => {
     setError(null);
     setSuccessNotice(null);
 
-    if (!email) {
+    if (!email || !email.trim()) {
       setError('Por favor, informe seu endereço de e-mail.');
       return;
     }
@@ -185,7 +270,7 @@ export const AuthModal: React.FC<AuthModalProps> = ({ onSuccess }) => {
           }, 2000);
         }
       } catch (err: any) {
-        setError(err.message || 'Falha ao processar recuperação de senha.');
+        setError(extractErrorMessage(err, 'Falha ao processar recuperação de senha.'));
       } finally {
         setIsLoading(false);
       }
@@ -218,7 +303,7 @@ export const AuthModal: React.FC<AuthModalProps> = ({ onSuccess }) => {
         onSuccess(user);
       }
     } catch (err: any) {
-      setError(err.message || 'Erro na autenticação. Verifique os dados inseridos.');
+      setError(extractErrorMessage(err, 'Erro na autenticação. Verifique os dados inseridos.'));
     } finally {
       setIsLoading(false);
     }
@@ -238,7 +323,7 @@ export const AuthModal: React.FC<AuthModalProps> = ({ onSuccess }) => {
             <ShieldCheck className="w-9 h-9 text-white" />
           </div>
           <h1 className="text-3xl font-extrabold tracking-tight text-white flex items-center justify-center gap-2">
-            <span>👑 Finanças Pro 2.0</span>
+            <span>Finanças Pro 2.0</span>
           </h1>
           <p className="text-sm text-slate-400 mt-2 flex items-center justify-center gap-1.5 font-medium">
             <LockKeyhole className="w-3.5 h-3.5 text-emerald-400" />
@@ -289,6 +374,9 @@ export const AuthModal: React.FC<AuthModalProps> = ({ onSuccess }) => {
           {/* Social Google Login Button (available for login & register) */}
           {mode !== 'forgot_password' && (
             <div className="mb-6">
+              {/* Optional official GIS button container */}
+              <div id="googleOfficialBtn" className="flex justify-center mb-2 empty:hidden" />
+
               {!showGoogleCustomInput ? (
                 <div className="space-y-2">
                   <button
@@ -297,7 +385,7 @@ export const AuthModal: React.FC<AuthModalProps> = ({ onSuccess }) => {
                     disabled={isLoading}
                     className="w-full flex items-center justify-center gap-3 py-3.5 px-4 bg-white hover:bg-slate-100 text-slate-900 font-semibold rounded-2xl transition-all shadow-md hover:shadow-lg active:scale-[0.98] disabled:opacity-60 cursor-pointer text-sm"
                   >
-                    <svg className="w-5 h-5" viewBox="0 0 24 24">
+                    <svg className="w-5 h-5 shrink-0" viewBox="0 0 24 24">
                       <path
                         fill="#4285F4"
                         d="M22.56 12.25c0-.78-.07-1.53-.2-2.25H12v4.26h5.92c-.26 1.37-1.04 2.53-2.21 3.31v2.77h3.57c2.08-1.92 3.28-4.74 3.28-8.09z"
@@ -315,7 +403,7 @@ export const AuthModal: React.FC<AuthModalProps> = ({ onSuccess }) => {
                         d="M12 5.38c1.62 0 3.06.56 4.21 1.64l3.15-3.15C17.45 2.09 14.97 1 12 1 7.7 1 3.99 3.47 2.18 7.06l3.66 2.84c.87-2.6 3.3-4.52 6.16-4.52z"
                       />
                     </svg>
-                    <span>Continuar com e-mail do Google</span>
+                    <span>Continuar com o Google</span>
                   </button>
 
                   <div className="text-center">
@@ -324,7 +412,7 @@ export const AuthModal: React.FC<AuthModalProps> = ({ onSuccess }) => {
                       onClick={() => setShowGoogleCustomInput(true)}
                       className="text-[11px] text-blue-400 hover:text-blue-300 underline cursor-pointer"
                     >
-                      Entrar informando e-mail Google
+                      Acessar informando e-mail Google
                     </button>
                   </div>
                 </div>
@@ -353,11 +441,14 @@ export const AuthModal: React.FC<AuthModalProps> = ({ onSuccess }) => {
                     spellCheck={false}
                     className="w-full bg-slate-900 border border-slate-700 rounded-xl px-3 py-2 text-xs text-white placeholder-slate-400 focus:outline-none focus:border-blue-500"
                   />
+                  <p className="text-[10px] text-slate-400 leading-tight">
+                    Acesso seguro: sua senha do Google nunca é solicitada nem compartilhada.
+                  </p>
                   <button
                     type="button"
                     onClick={() => handleGoogleSignIn(customGoogleEmail)}
-                    disabled={isLoading || !customGoogleEmail}
-                    className="w-full py-2 bg-blue-600 hover:bg-blue-500 text-white font-semibold rounded-xl text-xs transition-all cursor-pointer"
+                    disabled={isLoading || !customGoogleEmail.trim()}
+                    className="w-full py-2 bg-blue-600 hover:bg-blue-500 text-white font-semibold rounded-xl text-xs transition-all cursor-pointer disabled:opacity-60"
                   >
                     Acessar com esta Conta Google
                   </button>
@@ -377,14 +468,14 @@ export const AuthModal: React.FC<AuthModalProps> = ({ onSuccess }) => {
           {error && (
             <div className="mb-5 p-3.5 rounded-xl bg-red-500/10 border border-red-500/30 text-red-300 text-xs flex items-start gap-2.5 animate-shake">
               <AlertCircle className="w-4 h-4 shrink-0 text-red-400 mt-0.5" />
-              <div className="flex-1">{error}</div>
+              <div className="flex-1 leading-relaxed">{error}</div>
             </div>
           )}
 
           {successNotice && (
             <div className="mb-5 p-3.5 rounded-xl bg-emerald-500/10 border border-emerald-500/30 text-emerald-300 text-xs flex items-start gap-2.5 animate-fade-in">
               <CheckCircle2 className="w-4 h-4 shrink-0 text-emerald-400 mt-0.5" />
-              <div className="flex-1">{successNotice}</div>
+              <div className="flex-1 leading-relaxed">{successNotice}</div>
             </div>
           )}
 
@@ -496,7 +587,7 @@ export const AuthModal: React.FC<AuthModalProps> = ({ onSuccess }) => {
                 <div>
                   <label className="block text-xs font-semibold text-slate-300 uppercase tracking-wider mb-1.5 flex items-center justify-between">
                     <span>Código PIN de Segurança (6 dígitos)</span>
-                    <span className="text-emerald-400 font-normal normal-case">Preenchido com segurança</span>
+                    <span className="text-emerald-400 font-normal normal-case">Código Verificado</span>
                   </label>
                   <div className="relative">
                     <Key className="w-4 h-4 text-slate-400 absolute left-3.5 top-1/2 -translate-y-1/2 pointer-events-none" />
