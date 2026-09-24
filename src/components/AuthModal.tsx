@@ -51,17 +51,18 @@ export const AuthModal: React.FC<AuthModalProps> = ({ onSuccess }) => {
   const [showGoogleCustomInput, setShowGoogleCustomInput] = useState(false);
   const [customGoogleEmail, setCustomGoogleEmail] = useState('');
 
-  // Initialize official Google Identity Services if client is available
+  // Check if real Google OAuth Client ID is provided in environment
+  const configuredGoogleClientId = ((import.meta as any).env?.VITE_GOOGLE_CLIENT_ID || '').trim();
+
+  // Initialize official Google Identity Services ONLY if a real configured Client ID exists
   useEffect(() => {
+    if (!configuredGoogleClientId) return;
+
     const initGsi = () => {
       if (typeof window !== 'undefined' && (window as any).google?.accounts?.id) {
         try {
-          const clientId =
-            (import.meta as any).env?.VITE_GOOGLE_CLIENT_ID ||
-            '10312254122492-auth.apps.googleusercontent.com';
-
           (window as any).google.accounts.id.initialize({
-            client_id: clientId,
+            client_id: configuredGoogleClientId,
             callback: async (response: any) => {
               if (response?.credential) {
                 setIsLoading(true);
@@ -117,7 +118,7 @@ export const AuthModal: React.FC<AuthModalProps> = ({ onSuccess }) => {
         clearTimeout(timeout);
       };
     }
-  }, [mode]);
+  }, [mode, configuredGoogleClientId]);
 
   const resetForm = () => {
     setError(null);
@@ -131,14 +132,10 @@ export const AuthModal: React.FC<AuthModalProps> = ({ onSuccess }) => {
 
   const handleGoogleSignIn = async (targetEmail?: string) => {
     setError(null);
-    const emailToUse = (targetEmail || customGoogleEmail || '').trim();
+    const emailToUse = (targetEmail || customGoogleEmail || email || '').trim();
 
-    // If an explicit email was provided or typed in the Google input
-    if (emailToUse) {
-      if (!emailToUse.includes('@')) {
-        setError('Por favor, informe um endereço de e-mail válido.');
-        return;
-      }
+    // If an explicit email was provided or typed in the Google input or form
+    if (emailToUse && emailToUse.includes('@')) {
       setIsLoading(true);
       try {
         const user = await signInGoogle({ email: emailToUse });
@@ -155,15 +152,11 @@ export const AuthModal: React.FC<AuthModalProps> = ({ onSuccess }) => {
       return;
     }
 
-    // Try Google OAuth2 token client if available
-    if (typeof window !== 'undefined' && (window as any).google?.accounts?.oauth2) {
+    // Try Google OAuth2 token client ONLY if a real configured Client ID is provided
+    if (configuredGoogleClientId && typeof window !== 'undefined' && (window as any).google?.accounts?.oauth2) {
       try {
-        const clientId =
-          (import.meta as any).env?.VITE_GOOGLE_CLIENT_ID ||
-          '10312254122492-auth.apps.googleusercontent.com';
-
         const tokenClient = (window as any).google.accounts.oauth2.initTokenClient({
-          client_id: clientId,
+          client_id: configuredGoogleClientId,
           scope: 'email profile openid',
           callback: async (tokenResponse: any) => {
             if (tokenResponse?.access_token) {
@@ -204,30 +197,10 @@ export const AuthModal: React.FC<AuthModalProps> = ({ onSuccess }) => {
       }
     }
 
-    // Attempt official Google One Tap / Account Chooser if available in browser
-    if (typeof window !== 'undefined' && (window as any).google?.accounts?.id) {
-      try {
-        let promptHandled = false;
-        (window as any).google.accounts.id.prompt((notification: any) => {
-          promptHandled = true;
-          if (notification.isNotDisplayed() || notification.isSkippedMoment()) {
-            setShowGoogleCustomInput(true);
-          }
-        });
-
-        // If prompt wasn't triggered immediately, show the input field
-        setTimeout(() => {
-          if (!promptHandled) {
-            setShowGoogleCustomInput(true);
-          }
-        }, 400);
-        return;
-      } catch (err) {
-        console.warn('GIS prompt error:', err);
-      }
+    // When no Client ID is configured, show the direct Google email input
+    if (email && email.includes('@') && !customGoogleEmail) {
+      setCustomGoogleEmail(email.trim());
     }
-
-    // Default: show the Google email input
     setShowGoogleCustomInput(true);
   };
 
@@ -374,8 +347,10 @@ export const AuthModal: React.FC<AuthModalProps> = ({ onSuccess }) => {
           {/* Social Google Login Button (available for login & register) */}
           {mode !== 'forgot_password' && (
             <div className="mb-6">
-              {/* Optional official GIS button container */}
-              <div id="googleOfficialBtn" className="flex justify-center mb-2 empty:hidden" />
+              {/* Optional official GIS button container if real Client ID configured */}
+              {configuredGoogleClientId && (
+                <div id="googleOfficialBtn" className="flex justify-center mb-2 empty:hidden" />
+              )}
 
               {!showGoogleCustomInput ? (
                 <div className="space-y-2">
@@ -409,7 +384,12 @@ export const AuthModal: React.FC<AuthModalProps> = ({ onSuccess }) => {
                   <div className="text-center">
                     <button
                       type="button"
-                      onClick={() => setShowGoogleCustomInput(true)}
+                      onClick={() => {
+                        if (email && email.includes('@') && !customGoogleEmail) {
+                          setCustomGoogleEmail(email.trim());
+                        }
+                        setShowGoogleCustomInput(true);
+                      }}
                       className="text-[11px] text-blue-400 hover:text-blue-300 underline cursor-pointer"
                     >
                       Acessar informando e-mail Google
@@ -417,42 +397,56 @@ export const AuthModal: React.FC<AuthModalProps> = ({ onSuccess }) => {
                   </div>
                 </div>
               ) : (
-                <div className="p-3.5 rounded-2xl bg-slate-950/80 border border-slate-800 space-y-2.5 animate-fade-in">
+                <form
+                  onSubmit={(e) => {
+                    e.preventDefault();
+                    handleGoogleSignIn(customGoogleEmail);
+                  }}
+                  className="p-3.5 rounded-2xl bg-slate-950/80 border border-blue-500/40 space-y-2.5 animate-fade-in shadow-lg shadow-blue-500/10"
+                >
                   <div className="flex items-center justify-between text-xs">
-                    <span className="font-semibold text-slate-300 flex items-center gap-1.5">
+                    <span className="font-semibold text-slate-200 flex items-center gap-1.5">
                       <Mail className="w-3.5 h-3.5 text-blue-400" />
                       E-mail da sua conta Google:
                     </span>
                     <button
                       type="button"
                       onClick={() => setShowGoogleCustomInput(false)}
-                      className="text-slate-400 hover:text-slate-200 text-[10px]"
+                      className="text-slate-400 hover:text-slate-200 text-[10px] cursor-pointer"
                     >
                       Cancelar
                     </button>
                   </div>
                   <input
                     type="email"
+                    required
+                    autoFocus
                     value={customGoogleEmail}
                     onChange={(e) => setCustomGoogleEmail(e.target.value)}
                     placeholder="seu.email@gmail.com"
                     autoCapitalize="none"
                     autoCorrect="off"
                     spellCheck={false}
-                    className="w-full bg-slate-900 border border-slate-700 rounded-xl px-3 py-2 text-xs text-white placeholder-slate-400 focus:outline-none focus:border-blue-500"
+                    className="w-full bg-slate-900 border border-slate-700 rounded-xl px-3 py-2 text-xs text-white placeholder-slate-400 focus:outline-none focus:border-blue-500 focus:ring-1 focus:ring-blue-500"
                   />
                   <p className="text-[10px] text-slate-400 leading-tight">
-                    Acesso seguro: sua senha do Google nunca é solicitada nem compartilhada.
+                    🔒 Acesso Seguro: Sua senha do Google nunca é solicitada nem compartilhada.
                   </p>
                   <button
-                    type="button"
-                    onClick={() => handleGoogleSignIn(customGoogleEmail)}
+                    type="submit"
                     disabled={isLoading || !customGoogleEmail.trim()}
-                    className="w-full py-2 bg-blue-600 hover:bg-blue-500 text-white font-semibold rounded-xl text-xs transition-all cursor-pointer disabled:opacity-60"
+                    className="w-full py-2.5 bg-blue-600 hover:bg-blue-500 text-white font-semibold rounded-xl text-xs transition-all cursor-pointer disabled:opacity-60 shadow-md shadow-blue-600/30 flex items-center justify-center gap-2"
                   >
-                    Acessar com esta Conta Google
+                    {isLoading ? (
+                      <div className="w-4 h-4 border-2 border-white/30 border-t-white rounded-full animate-spin" />
+                    ) : (
+                      <>
+                        <span>Acessar com esta Conta Google</span>
+                        <ArrowRight className="w-3.5 h-3.5" />
+                      </>
+                    )}
                   </button>
-                </div>
+                </form>
               )}
 
               <div className="relative my-6 flex items-center justify-center">
