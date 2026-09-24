@@ -1,4 +1,4 @@
-import React, { useState } from 'react';
+import React, { useState, useEffect } from 'react';
 import { 
   ShieldCheck, 
   Lock, 
@@ -50,6 +50,43 @@ export const AuthModal: React.FC<AuthModalProps> = ({ onSuccess }) => {
   const [showGoogleCustomInput, setShowGoogleCustomInput] = useState(false);
   const [customGoogleEmail, setCustomGoogleEmail] = useState('');
 
+  // Initialize official Google Identity Services if client is available
+  useEffect(() => {
+    if (typeof window !== 'undefined' && (window as any).google?.accounts?.id) {
+      try {
+        const clientId =
+          (import.meta as any).env?.VITE_GOOGLE_CLIENT_ID ||
+          '10312254122492-auth.apps.googleusercontent.com';
+
+        (window as any).google.accounts.id.initialize({
+          client_id: clientId,
+          callback: async (response: any) => {
+            if (response?.credential) {
+              setIsLoading(true);
+              setError(null);
+              try {
+                const user = await signInGoogle({ credential: response.credential });
+                if (user) {
+                  onSuccess(user);
+                }
+              } catch (err: any) {
+                console.error('Google Credential Login Error:', err);
+                setError(err.message || 'Falha ao autenticar com a conta Google.');
+                setShowGoogleCustomInput(true);
+              } finally {
+                setIsLoading(false);
+              }
+            }
+          },
+          auto_select: false,
+          cancel_on_tap_outside: true,
+        });
+      } catch (err) {
+        console.warn('GIS initialization check:', err);
+      }
+    }
+  }, [mode]);
+
   const resetForm = () => {
     setError(null);
     setSuccessNotice(null);
@@ -61,25 +98,52 @@ export const AuthModal: React.FC<AuthModalProps> = ({ onSuccess }) => {
   };
 
   const handleGoogleSignIn = async (targetEmail?: string) => {
+    setError(null);
     const emailToUse = (targetEmail || customGoogleEmail || '').trim();
-    if (!emailToUse) {
-      setShowGoogleCustomInput(true);
+
+    // If an explicit email was provided or typed in the Google input
+    if (emailToUse) {
+      setIsLoading(true);
+      try {
+        const user = await signInGoogle({ email: emailToUse });
+        if (user) {
+          onSuccess(user);
+        }
+      } catch (err: any) {
+        console.error('Google Sign-in Error:', err);
+        setError(err.message || 'Falha ao autenticar com e-mail Google. Tente novamente.');
+        setShowGoogleCustomInput(true);
+      } finally {
+        setIsLoading(false);
+      }
       return;
     }
-    setError(null);
-    setIsLoading(true);
-    try {
-      const user = await signInGoogle(emailToUse);
-      if (user) {
-        onSuccess(user);
+
+    // Attempt official Google One Tap / Account Chooser if available in browser
+    if (typeof window !== 'undefined' && (window as any).google?.accounts?.id) {
+      try {
+        let promptHandled = false;
+        (window as any).google.accounts.id.prompt((notification: any) => {
+          promptHandled = true;
+          if (notification.isNotDisplayed() || notification.isSkippedMoment()) {
+            setShowGoogleCustomInput(true);
+          }
+        });
+
+        // If prompt wasn't triggered immediately, show the input field
+        setTimeout(() => {
+          if (!promptHandled) {
+            setShowGoogleCustomInput(true);
+          }
+        }, 300);
+        return;
+      } catch (err) {
+        console.warn('GIS prompt error:', err);
       }
-    } catch (err: any) {
-      console.error('Google Sign-in Error:', err);
-      setError(err.message || 'Falha ao autenticar com e-mail Google. Tente novamente.');
-      setShowGoogleCustomInput(true);
-    } finally {
-      setIsLoading(false);
     }
+
+    // Default: show the Google email input
+    setShowGoogleCustomInput(true);
   };
 
   const handleEmailAuth = async (e: React.FormEvent) => {

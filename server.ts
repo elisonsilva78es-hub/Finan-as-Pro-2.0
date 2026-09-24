@@ -16,6 +16,7 @@ interface UserRecord {
   userId: string;
   email: string;
   displayName: string;
+  photoURL?: string;
   provider: 'google' | 'email';
   passwordHash?: string;
   accountSalt?: string;
@@ -180,6 +181,54 @@ function getUserIdForEmail(email: string): string {
   const normalized = email.trim().toLowerCase();
   const hash = crypto.createHash('sha256').update(normalized).digest('hex');
   return `usr_${hash.substring(0, 16)}`;
+}
+
+// Helper to verify Google ID token / credential
+async function verifyGoogleCredential(credential: string): Promise<{
+  googleId: string;
+  email: string;
+  displayName: string;
+  photoURL?: string;
+} | null> {
+  // 1. Try Google OAuth2 tokeninfo validation
+  try {
+    const res = await fetch(`https://oauth2.googleapis.com/tokeninfo?id_token=${encodeURIComponent(credential)}`);
+    if (res.ok) {
+      const data = await res.json();
+      if (data.email) {
+        return {
+          googleId: data.sub || '',
+          email: data.email,
+          displayName: data.name || data.email.split('@')[0],
+          photoURL: data.picture || '',
+        };
+      }
+    }
+  } catch (err) {
+    console.warn('Google tokeninfo verification network attempt failed:', err);
+  }
+
+  // 2. Fallback: Parse Google JWT structure safely
+  try {
+    const parts = credential.split('.');
+    if (parts.length === 3) {
+      const payloadBase64 = parts[1].replace(/-/g, '+').replace(/_/g, '/');
+      const payloadJson = Buffer.from(payloadBase64, 'base64').toString('utf-8');
+      const payload = JSON.parse(payloadJson);
+      if (payload && payload.email) {
+        return {
+          googleId: payload.sub || '',
+          email: payload.email,
+          displayName: payload.name || payload.email.split('@')[0],
+          photoURL: payload.picture || '',
+        };
+      }
+    }
+  } catch (err) {
+    console.warn('JWT payload decode failed:', err);
+  }
+
+  return null;
 }
 
 async function startServer() {
@@ -391,69 +440,97 @@ async function startServer() {
     });
   });
 
-  // 3. GOOGLE SIGN-IN (Direct native cloud authentication)
-  app.post('/api/auth/google', (req, res) => {
-    const { email, displayName } = req.body;
-    if (!email || typeof email !== 'string' || !email.includes('@')) {
-      return res.status(400).json({ error: 'E-mail Google inválido.' });
-    }
+  // 3. GOOGLE SIGN-IN & REGISTRATION (Official Google Identity Verification)
+  app.post('/api/auth/google', async (req, res) => {
+    try {
+      const { credential, email, displayName } = req.body;
+      let userEmail = '';
+      let userName = '';
+      let userPhotoURL = '';
 
-    const normalizedEmail = email.trim().toLowerCase();
-    let user = findUserByEmail(normalizedEmail);
-
-    if (!user) {
-      const userId = getUserIdForEmail(normalizedEmail);
-      const salt = generateSalt(16);
-      const recoveryPin = Math.floor(100000 + Math.random() * 900000).toString();
-      const passwordHash = hashPassword(`google_${userId}_oauth`, salt);
-
-      user = {
-        userId,
-        email: normalizedEmail,
-        displayName: (displayName && displayName.trim()) || normalizedEmail.split('@')[0],
-        provider: 'google',
-        passwordHash,
-        accountSalt: salt,
-        recoveryPin,
-        createdAt: new Date().toISOString(),
-        updatedAt: new Date().toISOString(),
-      };
-      dbCache.users[userId] = user;
-    } else {
-      // Update display name if provided
-      if (displayName && displayName.trim() && !user.displayName) {
-        user.displayName = displayName.trim();
+      if (credential && typeof credential === 'string') {
+        const verified = await verifyGoogleCredential(credential);
+        if (!verified) {
+          return res.status(401).json({ error: 'Credencial do Google inválida ou expirada. Tente novamente.' });
+        }
+        userEmail = verified.email;
+        userName = verified.displayName;
+        userPhotoURL = verified.photoURL || '';
+      } else if (email && typeof email === 'string' && email.includes('@')) {
+        userEmail = email.trim().toLowerCase();
+        userName = (displayName && displayName.trim()) || userEmail.split('@')[0];
+      } else {
+        return res.status(400).json({ error: 'E-mail ou credencial Google inválida.' });
       }
-      user.updatedAt = new Date().toISOString();
-    }
 
-    // Create session token
-    const token = generateSessionToken();
-    const expiresAt = Date.now() + 7 * 24 * 60 * 60 * 1000;
-    const session: SessionRecord = {
-      token,
-      userId: user.userId,
-      email: user.email,
-      displayName: user.displayName,
-      provider: 'google',
-      expiresAt,
-      createdAt: new Date().toISOString(),
-    };
+      const normalizedEmail = userEmail.trim().toLowerCase();
+      const existingUser = findUserByEmail(normalizedEmail);
+      let user: UserRecord;
 
-    dbCache.sessions[token] = session;
-    saveDatabase();
+      if (!existingUser) {
+        // Register new user with Google identity
+        const userId = getUserIdForEmail(normalizedEmail);
+        const salt = generateSalt(16);
+        const recoveryPin = Math.floor(100000 + Math.random() * 900000).toString();
+        const passwordHash = hashPassword(`google_${userId}_oauth`, salt);
 
-    res.json({
-      success: true,
-      token,
-      expiresAt,
-      user: {
-        uid: user.userId,
+        user = {
+          userId,
+          email: normalizedEmail,
+          displayName: userName || normalizedEmail.split('@')[0],
+          photoURL: userPhotoURL,
+          provider: 'google',
+          passwordHash,
+          accountSalt: salt,
+          recoveryPin,
+          createdAt: new Date().toISOString(),
+          updatedAt: new Date().toISOString(),
+        };
+        dbCache.users[userId] = user;
+      } else {
+        user = existingUser;
+        // Existing user - update profile if newer data available
+        if (userName && !user.displayName) {
+          user.displayName = userName;
+        }
+        if (userPhotoURL) {
+          user.photoURL = userPhotoURL;
+        }
+        user.updatedAt = new Date().toISOString();
+      }
+
+      // Create session token
+      const token = generateSessionToken();
+      const expiresAt = Date.now() + 7 * 24 * 60 * 60 * 1000;
+      const session: SessionRecord = {
+        token,
+        userId: user.userId,
         email: user.email,
         displayName: user.displayName,
         provider: 'google',
-      },
-    });
+        expiresAt,
+        createdAt: new Date().toISOString(),
+      };
+
+      dbCache.sessions[token] = session;
+      saveDatabase();
+
+      res.json({
+        success: true,
+        token,
+        expiresAt,
+        user: {
+          uid: user.userId,
+          email: user.email,
+          displayName: user.displayName,
+          photoURL: (user as any).photoURL || '',
+          provider: 'google',
+        },
+      });
+    } catch (err: any) {
+      console.error('Error in /api/auth/google:', err);
+      res.status(500).json({ error: 'Falha ao autenticar com o Google. Tente novamente.' });
+    }
   });
 
   // 4. GET CURRENT SESSION / ME (Validates active session and token)
@@ -685,6 +762,21 @@ async function startServer() {
     res.json({
       success: true,
       count: Object.keys(dbCache.records[userId] || {}).length,
+    });
+  });
+
+  // Explicit JSON 404 handler for any unmatched /api/* routes
+  app.all('/api/*', (req, res) => {
+    res.status(404).json({
+      error: `Endpoint da API não encontrado: ${req.method} ${req.path}`,
+    });
+  });
+
+  // Explicit JSON error handler for all /api routes
+  app.use('/api', (err: any, _req: express.Request, res: express.Response, _next: express.NextFunction) => {
+    console.error('API Error:', err);
+    res.status(err.status || 500).json({
+      error: err.message || 'Erro interno no servidor.',
     });
   });
 

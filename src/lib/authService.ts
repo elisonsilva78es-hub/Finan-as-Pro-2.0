@@ -68,12 +68,28 @@ function setActiveUser(user: AppUser | null, token?: string | null) {
   notifySubscribers(user);
 }
 
-// Helper for native Cloud API calls with automatic Bearer Token header
-export async function cloudFetch<T>(endpoint: string, options: RequestInit = {}): Promise<T | null> {
+export interface ApiResponse<T> {
+  success: boolean;
+  data?: T;
+  error?: string;
+}
+
+/**
+ * Universal safe API fetch:
+ * - Guarantees headers and content-type verification
+ * - Never calls res.json() on non-JSON content
+ * - Eliminates "Unexpected token 'T', The page..." JSON syntax errors
+ * - Translates HTTP error codes (404, 429, 500) into clear Portuguese messages
+ */
+export async function safeApiCall<T>(
+  endpoint: string,
+  options: RequestInit = {}
+): Promise<ApiResponse<T>> {
   try {
     const token = getAuthToken();
     const headers: Record<string, string> = {
       'Content-Type': 'application/json',
+      'Accept': 'application/json',
       ...((options.headers as Record<string, string>) || {}),
     };
 
@@ -86,35 +102,66 @@ export async function cloudFetch<T>(endpoint: string, options: RequestInit = {})
       headers,
     });
 
-    if (res.status === 401) {
-      // Session expired or invalidated on backend
-      console.warn('Session expired or unauthorized for:', endpoint);
-      // Only clear if not an auth endpoint (e.g. login attempt)
-      if (!endpoint.startsWith('/api/auth/login') && !endpoint.startsWith('/api/auth/register')) {
-        setActiveUser(null, null);
+    const contentType = res.headers.get('content-type') || '';
+    let parsed: any = null;
+
+    if (contentType.includes('application/json')) {
+      try {
+        parsed = await res.json();
+      } catch (jsonErr) {
+        console.warn(`JSON parse error on ${endpoint}:`, jsonErr);
       }
-      return null;
+    } else {
+      // Non-JSON response (HTML, text, or proxy error)
+      const rawText = await res.text().catch(() => '');
+      console.warn(`Non-JSON response from ${endpoint} (Status ${res.status}):`, rawText.substring(0, 100));
     }
 
     if (!res.ok) {
-      let errMessage = 'Erro na requisição';
-      try {
-        const errorData = await res.json();
-        if (errorData?.error) errMessage = errorData.error;
-      } catch {
-        // ignore
+      if (res.status === 401) {
+        // If unauthorized on protected routes, clear stale session
+        if (!endpoint.includes('/login') && !endpoint.includes('/register') && !endpoint.includes('/google')) {
+          setActiveUser(null, null);
+        }
       }
-      throw new Error(errMessage);
+
+      const errorMessage =
+        parsed?.error ||
+        (res.status === 404
+          ? 'Serviço de autenticação temporariamente indisponível (404).'
+          : res.status === 429
+          ? parsed?.error || 'Muitas tentativas sem sucesso. Aguarde 5 minutos antes de tentar novamente.'
+          : res.status >= 500
+          ? 'Servidor temporariamente indisponível. Tente novamente em instantes.'
+          : `Erro de autenticação (${res.status}).`);
+
+      return { success: false, error: errorMessage };
     }
 
-    return await res.json();
-  } catch (err: any) {
-    if (err.message && err.message !== 'Failed to fetch') {
-      throw err;
+    if (!parsed) {
+      return { success: false, error: 'Resposta vazia ou inválida do servidor.' };
     }
-    console.warn(`Native Cloud API ${endpoint} unreachable:`, err);
+
+    return { success: true, data: parsed as T };
+  } catch (err: any) {
+    console.error(`Fetch failure on ${endpoint}:`, err);
+    return {
+      success: false,
+      error: 'Não foi possível conectar ao servidor. Verifique sua conexão com a internet.',
+    };
+  }
+}
+
+// Helper for native Cloud API calls with automatic Bearer Token header
+export async function cloudFetch<T>(endpoint: string, options: RequestInit = {}): Promise<T | null> {
+  const result = await safeApiCall<T>(endpoint, options);
+  if (!result.success) {
+    if (result.error && !endpoint.includes('/me')) {
+      console.warn(`API call failed for ${endpoint}:`, result.error);
+    }
     return null;
   }
+  return result.data ?? null;
 }
 
 // Subscribe to auth state changes
@@ -149,37 +196,62 @@ export function subscribeToAuth(callback: AuthSubscriber): () => void {
   };
 }
 
-// Google Sign In (Direct native cloud authentication)
-export async function signInGoogle(providedEmail?: string, providedName?: string): Promise<AppUser> {
-  if (!providedEmail || !providedEmail.trim()) {
-    throw new Error('Por favor, informe o seu e-mail do Google.');
+export interface GoogleAuthOptions {
+  credential?: string;
+  email?: string;
+  displayName?: string;
+}
+
+// Google Sign In & Registration (Integrated with Google Identity & Cloud Architecture)
+export async function signInGoogle(options: GoogleAuthOptions | string, providedName?: string): Promise<AppUser> {
+  let credential = '';
+  let email = '';
+  let displayName = providedName || '';
+
+  if (typeof options === 'string') {
+    email = options;
+  } else if (options && typeof options === 'object') {
+    credential = options.credential || '';
+    email = options.email || '';
+    displayName = options.displayName || displayName;
   }
 
-  const normalizedEmail = providedEmail.trim().toLowerCase();
-  const displayName = providedName || normalizedEmail.split('@')[0] || 'Usuário Google';
+  if (!credential && (!email || !email.trim())) {
+    throw new Error('Por favor, informe a conta Google para autenticação.');
+  }
 
-  const res = await fetch('/api/auth/google', {
+  const payload: any = {};
+  if (credential) {
+    payload.credential = credential;
+  }
+  if (email) {
+    payload.email = email.trim().toLowerCase();
+    payload.displayName = displayName || payload.email.split('@')[0];
+  }
+
+  const res = await safeApiCall<{
+    success: boolean;
+    token: string;
+    expiresAt: number;
+    user: { uid: string; email: string; displayName: string; photoURL?: string; provider: 'google' };
+  }>('/api/auth/google', {
     method: 'POST',
-    headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify({
-      email: normalizedEmail,
-      displayName,
-    }),
+    body: JSON.stringify(payload),
   });
 
-  const data = await res.json();
-  if (!res.ok || !data.success) {
-    throw new Error(data.error || 'Falha ao autenticar com e-mail Google.');
+  if (!res.success || !res.data) {
+    throw new Error(res.error || 'Falha ao autenticar com a conta Google.');
   }
 
   const appUser: AppUser = {
-    uid: data.user.uid,
-    email: data.user.email,
-    displayName: data.user.displayName,
+    uid: res.data.user.uid,
+    email: res.data.user.email,
+    displayName: res.data.user.displayName,
+    photoURL: res.data.user.photoURL,
     provider: 'google',
   };
 
-  setActiveUser(appUser, data.token);
+  setActiveUser(appUser, res.data.token);
   return appUser;
 }
 
@@ -199,9 +271,13 @@ export async function registerWithEmail(
     throw new Error('A senha deve conter no mínimo 6 caracteres.');
   }
 
-  const res = await fetch('/api/auth/register', {
+  const res = await safeApiCall<{
+    success: boolean;
+    token: string;
+    recoveryPin: string;
+    user: { uid: string; email: string; displayName: string; provider: 'email' };
+  }>('/api/auth/register', {
     method: 'POST',
-    headers: { 'Content-Type': 'application/json' },
     body: JSON.stringify({
       email: normalizedEmail,
       password,
@@ -209,20 +285,19 @@ export async function registerWithEmail(
     }),
   });
 
-  const data = await res.json();
-  if (!res.ok || !data.success) {
-    throw new Error(data.error || 'Falha ao realizar cadastro.');
+  if (!res.success || !res.data) {
+    throw new Error(res.error || 'Falha ao realizar cadastro.');
   }
 
   const appUser: AppUser = {
-    uid: data.user.uid,
-    email: data.user.email,
-    displayName: data.user.displayName,
+    uid: res.data.user.uid,
+    email: res.data.user.email,
+    displayName: res.data.user.displayName,
     provider: 'email',
   };
 
-  setActiveUser(appUser, data.token);
-  return { user: appUser, recoveryPin: data.recoveryPin };
+  setActiveUser(appUser, res.data.token);
+  return { user: appUser, recoveryPin: res.data.recoveryPin };
 }
 
 // Sign In with Email & Password
@@ -236,28 +311,30 @@ export async function loginWithEmail(email: string, password: string): Promise<A
     throw new Error('Por favor, digite sua senha.');
   }
 
-  const res = await fetch('/api/auth/login', {
+  const res = await safeApiCall<{
+    success: boolean;
+    token: string;
+    user: { uid: string; email: string; displayName: string; provider: 'email' | 'google' };
+  }>('/api/auth/login', {
     method: 'POST',
-    headers: { 'Content-Type': 'application/json' },
     body: JSON.stringify({
       email: normalizedEmail,
       password,
     }),
   });
 
-  const data = await res.json();
-  if (!res.ok || !data.success) {
-    throw new Error(data.error || 'E-mail ou senha incorretos.');
+  if (!res.success || !res.data) {
+    throw new Error(res.error || 'E-mail ou senha incorretos.');
   }
 
   const appUser: AppUser = {
-    uid: data.user.uid,
-    email: data.user.email,
-    displayName: data.user.displayName,
-    provider: data.user.provider || 'email',
+    uid: res.data.user.uid,
+    email: res.data.user.email,
+    displayName: res.data.user.displayName,
+    provider: (res.data.user.provider as 'google' | 'email') || 'email',
   };
 
-  setActiveUser(appUser, data.token);
+  setActiveUser(appUser, res.data.token);
   return appUser;
 }
 
@@ -269,21 +346,23 @@ export async function checkAccountForReset(email: string): Promise<{
 }> {
   const normalizedEmail = email.trim().toLowerCase();
 
-  const res = await fetch('/api/auth/check-account', {
+  const res = await safeApiCall<{
+    exists: boolean;
+    pinHint: string;
+    displayName: string;
+  }>('/api/auth/check-account', {
     method: 'POST',
-    headers: { 'Content-Type': 'application/json' },
     body: JSON.stringify({ email: normalizedEmail }),
   });
 
-  const data = await res.json();
-  if (!res.ok || !data.exists) {
-    throw new Error(data.error || 'Nenhuma conta cadastrada com este e-mail.');
+  if (!res.success || !res.data) {
+    throw new Error(res.error || 'Nenhuma conta cadastrada com este e-mail.');
   }
 
   return {
     exists: true,
-    pinHint: data.pinHint,
-    displayName: data.displayName,
+    pinHint: res.data.pinHint,
+    displayName: res.data.displayName,
   };
 }
 
@@ -299,9 +378,11 @@ export async function resetPasswordWithPin(
     throw new Error('A nova senha deve ter no mínimo 6 caracteres.');
   }
 
-  const res = await fetch('/api/auth/reset-password', {
+  const res = await safeApiCall<{
+    success: boolean;
+    message: string;
+  }>('/api/auth/reset-password', {
     method: 'POST',
-    headers: { 'Content-Type': 'application/json' },
     body: JSON.stringify({
       email: normalizedEmail,
       recoveryPin: recoveryPin.trim(),
@@ -309,21 +390,20 @@ export async function resetPasswordWithPin(
     }),
   });
 
-  const data = await res.json();
-  if (!res.ok || !data.success) {
-    throw new Error(data.error || 'Falha ao redefinir a senha.');
+  if (!res.success || !res.data) {
+    throw new Error(res.error || 'Falha ao redefinir a senha.');
   }
 
   return {
     success: true,
-    message: data.message || 'Senha redefinida com sucesso!',
+    message: res.data.message || 'Senha redefinida com sucesso!',
   };
 }
 
 // Logout
 export async function logoutUser(): Promise<void> {
   try {
-    await cloudFetch('/api/auth/logout', { method: 'POST' });
+    await safeApiCall('/api/auth/logout', { method: 'POST' });
   } catch {
     // ignore
   } finally {
