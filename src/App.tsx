@@ -890,7 +890,7 @@ export default function App() {
                   <TrendingUp className="w-4 h-4 text-emerald-500 shrink-0" /> 
                   <span className="font-bold text-emerald-600 dark:text-emerald-400">Renda Mensal Total</span>
                 </span>
-                <span className="text-slate-900 dark:text-white font-bold">
+                <span className="text-emerald-600 dark:text-emerald-400 font-bold">
                   R$ {totalRenda.toLocaleString('pt-BR', { minimumFractionDigits: 2 })}
                 </span>
               </div>
@@ -1256,44 +1256,44 @@ export default function App() {
           <button
             type="button"
             onClick={() => setActiveTab('resumo')}
-            className={`flex flex-col items-center gap-1 text-[10px] font-extrabold uppercase transition-colors ${
-              activeTab === 'resumo' ? 'text-blue-600 dark:text-blue-400' : 'text-slate-400 hover:text-slate-600'
+            className={`flex flex-col items-center gap-1 text-[10px] font-extrabold uppercase transition-colors cursor-pointer ${
+              activeTab === 'resumo' ? 'text-blue-600 dark:text-blue-400' : 'text-slate-400 hover:text-slate-600 dark:hover:text-slate-300'
             }`}
           >
-            <BarChart3 className="w-5 h-5" />
+            <BarChart3 className={`w-5 h-5 ${activeTab === 'resumo' ? 'text-blue-600 dark:text-blue-400' : 'text-blue-500'}`} />
             <span>Resumo</span>
           </button>
 
           <button
             type="button"
             onClick={() => setActiveTab('renda')}
-            className={`flex flex-col items-center gap-1 text-[10px] font-extrabold uppercase transition-colors ${
-              activeTab === 'renda' ? 'text-blue-600 dark:text-blue-400' : 'text-slate-400 hover:text-slate-600'
+            className={`flex flex-col items-center gap-1 text-[10px] font-extrabold uppercase transition-colors cursor-pointer ${
+              activeTab === 'renda' ? 'text-emerald-600 dark:text-emerald-400' : 'text-slate-400 hover:text-slate-600 dark:hover:text-slate-300'
             }`}
           >
-            <TrendingUp className="w-5 h-5" />
+            <TrendingUp className={`w-5 h-5 ${activeTab === 'renda' ? 'text-emerald-600 dark:text-emerald-400' : 'text-emerald-500'}`} />
             <span>Renda</span>
           </button>
 
           <button
             type="button"
             onClick={() => setActiveTab('despesas')}
-            className={`flex flex-col items-center gap-1 text-[10px] font-extrabold uppercase transition-colors ${
-              activeTab === 'despesas' ? 'text-blue-600 dark:text-blue-400' : 'text-slate-400 hover:text-slate-600'
+            className={`flex flex-col items-center gap-1 text-[10px] font-extrabold uppercase transition-colors cursor-pointer ${
+              activeTab === 'despesas' ? 'text-red-600 dark:text-red-400' : 'text-slate-400 hover:text-slate-600 dark:hover:text-slate-300'
             }`}
           >
-            <TrendingDown className="w-5 h-5" />
+            <TrendingDown className={`w-5 h-5 ${activeTab === 'despesas' ? 'text-red-600 dark:text-red-400' : 'text-red-500'}`} />
             <span>Gastos</span>
           </button>
 
           <button
             type="button"
             onClick={() => setActiveTab('economias')}
-            className={`flex flex-col items-center gap-1 text-[10px] font-extrabold uppercase transition-colors ${
-              activeTab === 'economias' ? 'text-blue-600 dark:text-blue-400' : 'text-slate-400 hover:text-slate-600'
+            className={`flex flex-col items-center gap-1 text-[10px] font-extrabold uppercase transition-colors cursor-pointer ${
+              activeTab === 'economias' ? 'text-indigo-600 dark:text-indigo-400' : 'text-slate-400 hover:text-slate-600 dark:hover:text-slate-300'
             }`}
           >
-            <PiggyBank className="w-5 h-5" />
+            <PiggyBank className={`w-5 h-5 ${activeTab === 'economias' ? 'text-indigo-600 dark:text-indigo-400' : 'text-indigo-500'}`} />
             <span>Poupança</span>
           </button>
         </div>
