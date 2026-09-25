@@ -46,6 +46,10 @@ import {
   deleteMonthlyFinancialItem,
   migrateLocalDataToCloud
 } from './lib/financialService';
+import {
+  subscribeToFinancialRealtime,
+  type RealtimeStatus
+} from './lib/realtimeService';
 import { 
   getOrCreateUserProfile, 
   initializeUserSecurity, 
@@ -72,12 +76,19 @@ export default function App() {
   const [showDataTransferModal, setShowDataTransferModal] = useState(false);
   const [showSupabaseModal, setShowSupabaseModal] = useState(false);
   const [cloudSource, setCloudSource] = useState<'supabase' | 'cloud' | 'cache'>('cloud');
+  const [realtimeStatus, setRealtimeStatus] = useState<RealtimeStatus>('DISCONNECTED');
   
   // Theme & Period state
   const [theme, setTheme] = useState<'light' | 'dark'>('light');
   const [activeTab, setActiveTab] = useState<'resumo' | 'renda' | 'despesas' | 'economias'>('resumo');
   const [selectedMonth, setSelectedMonth] = useState('09');
   const [selectedYear, setSelectedYear] = useState('2026');
+
+  // Ref to always have the latest period available inside Realtime callback without re-subscribing
+  const currentPeriodRef = useRef(`${selectedMonth}_${selectedYear}`);
+  useEffect(() => {
+    currentPeriodRef.current = `${selectedMonth}_${selectedYear}`;
+  }, [selectedMonth, selectedYear]);
 
   // Financial Data state
   const [dados, setDados] = useState<MonthlyFinancialData>({
@@ -139,43 +150,74 @@ export default function App() {
     }
   };
 
-  // Auth listener
+  // Auth listener: runs strictly ONCE on component mount to establish and maintain session
   useEffect(() => {
-    const unsubscribe = subscribeToAuth(async (user) => {
-      setAuthLoading(true);
+    const unsubscribe = subscribeToAuth((user) => {
       setCurrentUser(user);
+      setAuthLoading(false);
 
       if (user) {
-        try {
-          const currentPeriod = `${selectedMonth}_${selectedYear}`;
-          // 1. Immediately fetch persisted financial data from Supabase / Cloud
-          const res = await loadMonthlyFinancialData(user.uid, currentPeriod);
-          if (res && res.data) {
-            setDados(res.data);
-            setCloudSource(res.source);
-            setLastSyncedAt(new Date().toLocaleTimeString('pt-BR', { hour: '2-digit', minute: '2-digit' }));
-          }
-
-          // 2. Automatically sync any local device historical data to cloud in background
-          migrateLocalDataToCloud(user.uid).catch(console.warn);
-
-          // 3. Optional E2EE profile check (does not block access to financial data)
-          const { profile, isNewUser: isNew } = await getOrCreateUserProfile(user);
+        migrateLocalDataToCloud(user.uid).catch(console.warn);
+        getOrCreateUserProfile(user).then(({ profile, isNewUser: isNew }) => {
           setUserProfile(profile);
           setIsNewUser(isNew);
-        } catch (err) {
-          console.error('Error fetching user profile / data:', err);
-        }
+        }).catch(console.warn);
       } else {
         setCryptoKey(null);
         setUserProfile(null);
         setShowPassphraseModal(false);
       }
-      setAuthLoading(false);
     });
 
     return () => unsubscribe();
-  }, [selectedMonth, selectedYear]);
+  }, []); // Strictly empty: changing month or year MUST NEVER re-run auth or trigger logout!
+
+  // Realtime multi-device synchronization (Supabase WebSocket + SSE bridge)
+  useEffect(() => {
+    if (!currentUser?.uid) return;
+
+    const unsubscribe = subscribeToFinancialRealtime(
+      currentUser.uid,
+      (event) => {
+        const activePeriod = currentPeriodRef.current;
+        // Check if event is for the currently viewed month/year
+        if (event.monthYear === activePeriod) {
+          if (event.action === 'UPSERT_MONTHLY' && event.data) {
+            setDados(prev => ({
+              rendas: Array.isArray(event.data!.rendas) ? event.data!.rendas : prev.rendas,
+              despesas: Array.isArray(event.data!.despesas) ? event.data!.despesas : prev.despesas,
+              economias: Array.isArray(event.data!.economias) ? event.data!.economias : prev.economias,
+            }));
+            setLastSyncedAt(new Date().toLocaleTimeString('pt-BR', { hour: '2-digit', minute: '2-digit' }));
+          } else if ((event.action === 'INSERT_ITEM' || event.action === 'UPDATE_ITEM') && event.item && event.type) {
+            setDados(prev => {
+              const list = prev[event.type!];
+              const exists = list.some(i => i.id === event.item!.id);
+              let nextList: FinancialItem[];
+              if (exists) {
+                nextList = list.map(i => i.id === event.item!.id ? event.item! : i);
+              } else {
+                nextList = [event.item!, ...list];
+              }
+              return { ...prev, [event.type!]: nextList };
+            });
+            setLastSyncedAt(new Date().toLocaleTimeString('pt-BR', { hour: '2-digit', minute: '2-digit' }));
+          } else if (event.action === 'DELETE_ITEM' && event.itemId && event.type) {
+            setDados(prev => ({
+              ...prev,
+              [event.type!]: prev[event.type!].filter(i => i.id !== event.itemId)
+            }));
+            setLastSyncedAt(new Date().toLocaleTimeString('pt-BR', { hour: '2-digit', minute: '2-digit' }));
+          }
+        }
+      },
+      (status) => {
+        setRealtimeStatus(status);
+      }
+    );
+
+    return () => unsubscribe();
+  }, [currentUser?.uid]);
 
   // Handle Passphrase Unlock
   const handlePassphraseUnlock = async (passphrase: string): Promise<boolean> => {
@@ -632,10 +674,11 @@ export default function App() {
                 <button
                   type="button"
                   onClick={() => setShowSupabaseModal(true)}
-                  className="inline-flex items-center gap-1 text-emerald-600 dark:text-emerald-400 font-semibold hover:underline cursor-pointer"
-                  title="Status da Nuvem Supabase"
+                  className="inline-flex items-center gap-1.5 text-emerald-600 dark:text-emerald-400 font-semibold hover:underline cursor-pointer"
+                  title={`Supabase Realtime: ${realtimeStatus}`}
                 >
-                  <Database className="w-3 h-3" /> Supabase Nuvem
+                  <span className={`w-2 h-2 rounded-full ${realtimeStatus === 'SUBSCRIBED' ? 'bg-emerald-500 animate-pulse' : 'bg-amber-400'}`} />
+                  <span>Realtime Nuvem</span>
                 </button>
                 <span>•</span>
                 <span className="truncate max-w-[130px] font-medium" title={currentUser.email || ''}>
@@ -801,8 +844,9 @@ export default function App() {
               <h2 className="text-xs font-bold uppercase tracking-wider text-slate-400">Resumo Financeiro</h2>
               
               <div className="flex items-center justify-between text-sm font-semibold">
-                <span className="flex items-center gap-2 text-slate-500 dark:text-slate-400 font-normal">
-                  <TrendingUp className="w-4 h-4 text-emerald-500" /> Renda Mensal Total
+                <span className="flex items-center gap-2">
+                  <TrendingUp className="w-4 h-4 text-emerald-500 shrink-0" /> 
+                  <span className="font-bold text-emerald-600 dark:text-emerald-400">Renda Mensal Total</span>
                 </span>
                 <span className="text-slate-900 dark:text-white font-bold">
                   R$ {totalRenda.toLocaleString('pt-BR', { minimumFractionDigits: 2 })}

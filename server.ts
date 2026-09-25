@@ -276,14 +276,20 @@ async function startServer() {
     return req.socket.remoteAddress || '127.0.0.1';
   };
 
-  // Middleware to authenticate requests via Bearer Token
+  // Middleware to authenticate requests via Bearer Token or Query Token (for EventSource SSE)
   const requireAuth = (req: express.Request, res: express.Response, next: express.NextFunction) => {
+    let token = '';
     const authHeader = req.headers.authorization;
-    if (!authHeader || !authHeader.startsWith('Bearer ')) {
+    if (authHeader && authHeader.startsWith('Bearer ')) {
+      token = authHeader.substring(7).trim();
+    } else if (typeof req.query.token === 'string') {
+      token = req.query.token.trim();
+    }
+
+    if (!token) {
       return sendError(res, 401, 'Acesso não autorizado. Faça login para continuar.', 'UNAUTHORIZED');
     }
 
-    const token = authHeader.substring(7).trim();
     const session = dbCache.sessions?.[token];
 
     if (!session) {
@@ -798,6 +804,71 @@ async function startServer() {
   });
 
   // ==========================================
+  // REALTIME SYNCHRONIZATION BRIDGE (SSE & SUPABASE)
+  // Strictly validated and isolated by session.userId
+  // ==========================================
+  const realtimeClients: Map<string, Set<express.Response>> = new Map();
+
+  function broadcastFinancialChange(userId: string, event: {
+    action: 'UPSERT_MONTHLY' | 'DELETE_ITEM';
+    monthYear: string;
+    type?: 'rendas' | 'despesas' | 'economias';
+    itemId?: number;
+    data?: any;
+    timestamp: string;
+  }) {
+    const clients = realtimeClients.get(userId);
+    if (clients && clients.size > 0) {
+      const payload = `data: ${JSON.stringify(event)}\n\n`;
+      clients.forEach((client) => {
+        try {
+          client.write(payload);
+        } catch (err) {
+          console.warn('Error sending SSE event:', err);
+        }
+      });
+    }
+  }
+
+  // Realtime SSE Stream Endpoint for Instant Multi-Device Sync
+  app.get('/api/realtime/stream', requireAuth, (req, res) => {
+    const session = (req as any).session;
+    const userId = session.userId;
+
+    res.setHeader('Content-Type', 'text/event-stream; charset=utf-8');
+    res.setHeader('Cache-Control', 'no-cache, no-transform');
+    res.setHeader('Connection', 'keep-alive');
+    res.setHeader('X-Accel-Buffering', 'no');
+    res.flushHeaders?.();
+
+    if (!realtimeClients.has(userId)) {
+      realtimeClients.set(userId, new Set());
+    }
+    const clientSet = realtimeClients.get(userId)!;
+    clientSet.add(res);
+
+    // Send initial connection event
+    res.write(`data: ${JSON.stringify({ action: 'CONNECTED', userId, timestamp: new Date().toISOString() })}\n\n`);
+
+    // Keep-alive heartbeat every 20 seconds
+    const heartbeat = setInterval(() => {
+      try {
+        res.write(':heartbeat\n\n');
+      } catch {
+        clearInterval(heartbeat);
+      }
+    }, 20000);
+
+    req.on('close', () => {
+      clearInterval(heartbeat);
+      clientSet.delete(res);
+      if (clientSet.size === 0) {
+        realtimeClients.delete(userId);
+      }
+    });
+  });
+
+  // ==========================================
   // FINANCIAL DATA & SUPABASE SYNC ENDPOINTS
   // Strictly validated and isolated by session.userId
   // ==========================================
@@ -890,6 +961,14 @@ async function startServer() {
         console.warn('Could not save directly to Supabase:', sbErr);
       }
 
+      // 3. Broadcast in Realtime to other connected devices of this user
+      broadcastFinancialChange(userId, {
+        action: 'UPSERT_MONTHLY',
+        monthYear,
+        data: cleanData,
+        timestamp: new Date().toISOString(),
+      });
+
       return sendSuccess(res, {
         data: cleanData,
         monthYear,
@@ -934,6 +1013,16 @@ async function startServer() {
       } catch (sbErr) {
         console.warn('Could not delete directly from Supabase:', sbErr);
       }
+
+      // 3. Broadcast in Realtime to other connected devices of this user
+      broadcastFinancialChange(userId, {
+        action: 'DELETE_ITEM',
+        monthYear,
+        type: type as any,
+        itemId: numId,
+        data: updatedData,
+        timestamp: new Date().toISOString(),
+      });
 
       return sendSuccess(res, {
         data: updatedData,

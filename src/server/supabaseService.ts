@@ -62,6 +62,14 @@ CREATE POLICY "allow_all_financial_records" ON public.financial_records
     FOR ALL
     USING (true)
     WITH CHECK (true);
+
+-- 5. Habilita Realtime no Supabase para sincronização instantânea
+ALTER PUBLICATION supabase_realtime ADD TABLE public.financial_records;
+ALTER PUBLICATION supabase_realtime ADD TABLE public.monthly_data;
+
+-- Garante que UPDATE e DELETE incluam todas as colunas antigas nos eventos Realtime
+ALTER TABLE public.financial_records REPLICA IDENTITY FULL;
+ALTER TABLE public.monthly_data REPLICA IDENTITY FULL;
 `;
 
 /**

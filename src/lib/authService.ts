@@ -144,11 +144,9 @@ export async function safeApiCall<T>(
     }
 
     if (!res.ok) {
-      if (res.status === 401) {
-        // If unauthorized on protected routes, clear stale session
-        if (!endpoint.includes('/login') && !endpoint.includes('/register') && !endpoint.includes('/google')) {
-          setActiveUser(null, null);
-        }
+      if (res.status === 401 && endpoint === '/api/auth/me') {
+        // Only clear active session if the session check endpoint explicitly reports token expired/invalid
+        setActiveUser(null, null);
       }
 
       const defaultFallback =

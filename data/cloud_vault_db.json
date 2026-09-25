@@ -64,6 +64,17 @@
       "recoveryPin": "600437",
       "createdAt": "2026-09-25T07:23:37.377Z",
       "updatedAt": "2026-09-25T07:23:37.377Z"
+    },
+    "usr_8fc9abd1444569ab": {
+      "userId": "usr_8fc9abd1444569ab",
+      "email": "user_rt_1790340802518@example.com",
+      "displayName": "Realtime User",
+      "provider": "email",
+      "passwordHash": "rmh4tqNy42nnEDsy2qXfpajlZHvaWBqb3OFR0LLQ8F4=",
+      "accountSalt": "pPDRxNrL3f4N+s4MUlKNzg==",
+      "recoveryPin": "244060",
+      "createdAt": "2026-09-25T12:53:22.632Z",
+      "updatedAt": "2026-09-25T12:53:22.633Z"
     }
   },
   "records": {},
@@ -157,6 +168,15 @@
       "provider": "email",
       "expiresAt": 1790925817377,
       "createdAt": "2026-09-25T07:23:37.377Z"
+    },
+    "ff74be64fd85e54d0d03abcb9a5ddb6cb1b5df1bc7da999e76053df1a1ca801d": {
+      "token": "ff74be64fd85e54d0d03abcb9a5ddb6cb1b5df1bc7da999e76053df1a1ca801d",
+      "userId": "usr_8fc9abd1444569ab",
+      "email": "user_rt_1790340802518@example.com",
+      "displayName": "Realtime User",
+      "provider": "email",
+      "expiresAt": 1790945602633,
+      "createdAt": "2026-09-25T12:53:22.633Z"
     }
   },
   "financialData": {
@@ -197,6 +217,19 @@
             "status": "Pendente"
           }
         ],
+        "economias": []
+      }
+    },
+    "usr_8fc9abd1444569ab": {
+      "09_2026": {
+        "rendas": [
+          {
+            "id": 601,
+            "nome": "Salário",
+            "valor": 4000
+          }
+        ],
+        "despesas": [],
         "economias": []
       }
     }
