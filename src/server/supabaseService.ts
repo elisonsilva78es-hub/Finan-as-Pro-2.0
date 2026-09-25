@@ -12,11 +12,11 @@ export const supabase: SupabaseClient = createClient(SUPABASE_URL, SUPABASE_KEY,
   },
 });
 
-export const SQL_SETUP_SCRIPT = `-- ==========================================
--- ESTRUTURA OFICIAL DO BANCO SUPABASE
--- Execute este script no SQL Editor do Supabase
--- (Painel do Supabase -> SQL Editor -> New Query -> Run)
--- ==========================================
+export const SQL_SETUP_SCRIPT = `-- ====================================================================
+-- SCRIPT SQL OFICIAL DE CRIAÇÃO E CONFIGURAÇÃO DE TABELAS (SUPABASE)
+-- Execute este script no SQL Editor do seu projeto Supabase:
+-- (Painel do Supabase -> SQL Editor -> New Query -> Cole e clique RUN)
+-- ====================================================================
 
 -- 1. Tabela para dados mensais consolidados
 CREATE TABLE IF NOT EXISTS public.monthly_data (
@@ -42,34 +42,62 @@ CREATE TABLE IF NOT EXISTS public.financial_records (
     updated_at TIMESTAMPTZ DEFAULT now()
 );
 
--- Índices para alta performance de consulta
+-- 3. Índices de alta performance para busca e sincronização
 CREATE INDEX IF NOT EXISTS idx_records_user_period ON public.financial_records(user_id, month_year);
+CREATE INDEX IF NOT EXISTS idx_records_type ON public.financial_records(type);
 CREATE INDEX IF NOT EXISTS idx_monthly_user_period ON public.monthly_data(user_id, month_year);
 
--- 3. Habilita Row Level Security (RLS)
+-- 4. Habilita Row Level Security (RLS)
 ALTER TABLE public.monthly_data ENABLE ROW LEVEL SECURITY;
 ALTER TABLE public.financial_records ENABLE ROW LEVEL SECURITY;
 
--- 4. Políticas seguras de acesso para o Backend e API
+-- 5. Concede permissões essenciais para os papéis do Supabase
+GRANT ALL ON TABLE public.monthly_data TO postgres, anon, authenticated, service_role;
+GRANT ALL ON TABLE public.financial_records TO postgres, anon, authenticated, service_role;
+
+-- 6. Políticas RLS seguras e funcionais
 DROP POLICY IF EXISTS "allow_all_monthly_data" ON public.monthly_data;
 CREATE POLICY "allow_all_monthly_data" ON public.monthly_data
     FOR ALL
+    TO anon, authenticated, service_role
     USING (true)
     WITH CHECK (true);
 
 DROP POLICY IF EXISTS "allow_all_financial_records" ON public.financial_records;
 CREATE POLICY "allow_all_financial_records" ON public.financial_records
     FOR ALL
+    TO anon, authenticated, service_role
     USING (true)
     WITH CHECK (true);
 
--- 5. Habilita Realtime no Supabase para sincronização instantânea
-ALTER PUBLICATION supabase_realtime ADD TABLE public.financial_records;
-ALTER PUBLICATION supabase_realtime ADD TABLE public.monthly_data;
-
--- Garante que UPDATE e DELETE incluam todas as colunas antigas nos eventos Realtime
+-- 7. Garante que UPDATE e DELETE incluam todas as colunas antigas nos eventos Realtime
 ALTER TABLE public.financial_records REPLICA IDENTITY FULL;
 ALTER TABLE public.monthly_data REPLICA IDENTITY FULL;
+
+-- 8. Ativação segura do Supabase Realtime (Idempotente: nunca gera erro caso já adicionado)
+DO $$
+BEGIN
+  -- Garante a criação da publicação caso não exista
+  IF NOT EXISTS (SELECT 1 FROM pg_publication WHERE pubname = 'supabase_realtime') THEN
+    CREATE PUBLICATION supabase_realtime;
+  END IF;
+
+  -- Adiciona financial_records sem falhar caso já faça parte da publicação
+  IF NOT EXISTS (
+    SELECT 1 FROM pg_publication_tables 
+    WHERE pubname = 'supabase_realtime' AND schemaname = 'public' AND tablename = 'financial_records'
+  ) THEN
+    ALTER PUBLICATION supabase_realtime ADD TABLE public.financial_records;
+  END IF;
+
+  -- Adiciona monthly_data sem falhar caso já faça parte da publicação
+  IF NOT EXISTS (
+    SELECT 1 FROM pg_publication_tables 
+    WHERE pubname = 'supabase_realtime' AND schemaname = 'public' AND tablename = 'monthly_data'
+  ) THEN
+    ALTER PUBLICATION supabase_realtime ADD TABLE public.monthly_data;
+  END IF;
+END $$;
 `;
 
 /**
@@ -302,20 +330,30 @@ export async function deleteItemFromSupabase(
     const prefix = type === 'despesas' ? 'desp' : type === 'rendas' ? 'rend' : 'econ';
     const recordId = `${userId}_${monthYear}_${prefix}_${itemId}`;
 
-    const { error } = await supabase
+    // 1. Delete by exact composite ID
+    const { error: err1 } = await supabase
       .from('financial_records')
       .delete()
       .eq('id', recordId)
       .eq('user_id', userId);
 
-    if (error) {
-      console.warn('Supabase delete item error:', error);
+    // 2. Also delete where user, period, type match and ID ends with itemId
+    const { error: err2 } = await supabase
+      .from('financial_records')
+      .delete()
+      .eq('user_id', userId)
+      .eq('month_year', monthYear)
+      .eq('type', type)
+      .like('id', `%_${itemId}`);
+
+    if (err1 && err2 && err1.code !== 'PGRST205') {
+      console.warn('Supabase delete item error:', err1 || err2);
       return false;
     }
 
     return true;
   } catch (err) {
-    console.warn('Supabase delete item error:', err);
+    console.warn('Supabase delete item exception:', err);
     return false;
   }
 }

@@ -372,52 +372,127 @@ export default function App() {
     }
   };
 
-  // Add or update item strictly after Supabase confirms persistence
+  // Add or update item with instant UI feedback and cloud/Supabase persistence
   const handleAddItem = async (type: 'rendas' | 'despesas' | 'economias') => {
-    if (!currentUser) {
-      showToast('Por favor, faça login para salvar seus dados financeiros na nuvem.');
+    // Robust value parsing: handles "150,00", "150.50", "R$ 150", etc.
+    const cleanValorStr = inputValor.replace(/[^0-9.,]/g, '').replace(',', '.');
+    const valor = parseFloat(cleanValorStr);
+
+    if (isNaN(valor) || valor <= 0) {
+      showToast('Por favor, informe um valor numérico válido maior que zero.');
       return;
     }
 
-    const valor = parseFloat(inputValor.replace(',', '.'));
-    if (!inputNome.trim() || isNaN(valor) || valor <= 0) {
-      showToast('Por favor, informe uma descrição e um valor numérico válido.');
+    // Default description if omitted (especially intuitive for Poupança)
+    let nome = inputNome.trim();
+    if (!nome) {
+      if (type === 'economias') {
+        nome = 'Poupança / Reserva';
+      } else if (type === 'rendas') {
+        nome = 'Renda Extra';
+      } else {
+        showToast('Por favor, informe a descrição do gasto.');
+        return;
+      }
+    }
+
+    // Guest mode support: if user is not logged in, persist locally so they can use the app freely
+    if (!currentUser) {
+      const guestItem: FinancialItem = {
+        id: editingId !== null ? editingId : Date.now(),
+        nome,
+        valor,
+        status: type === 'despesas' ? 'Pendente' : undefined,
+      };
+
+      let nextList: FinancialItem[];
+      if (editingId !== null) {
+        nextList = dados[type].map(i => (String(i.id) === String(editingId) ? guestItem : i));
+      } else {
+        nextList = [guestItem, ...dados[type]];
+      }
+
+      const nextData: MonthlyFinancialData = {
+        ...dados,
+        [type]: nextList,
+      };
+
+      setDados(nextData);
+      try {
+        localStorage.setItem(`fin_local_guest_${periodKey}`, JSON.stringify(nextData));
+      } catch {}
+
+      setInputNome('');
+      setInputValor('');
+      setEditingId(null);
+      showToast(editingId !== null ? 'Item atualizado!' : 'Item adicionado! Faça login para sincronizar na nuvem.');
       return;
     }
 
     setIsSyncing(true);
+    const previousDados = dados;
 
     try {
       if (editingId !== null) {
-        // Updating existing item in Supabase
-        const targetItem = dados[type].find(i => i.id === editingId);
+        const targetItem = dados[type].find(i => String(i.id) === String(editingId));
+        const updatedLocalItem: FinancialItem = {
+          id: editingId,
+          nome,
+          valor,
+          status: targetItem?.status,
+        };
+
+        // Optimistic UI update
+        const optimisticData: MonthlyFinancialData = {
+          ...dados,
+          [type]: dados[type].map(i => (String(i.id) === String(editingId) ? updatedLocalItem : i)),
+        };
+        setDados(optimisticData);
+
         const result = await updateFinancialItem(periodKey, type, {
           id: editingId,
-          nome: inputNome.trim(),
+          nome,
           valor,
           status: targetItem?.status,
         });
 
-        setDados(result.data);
+        if (result.data) {
+          setDados(result.data);
+        }
         setEditingId(null);
         setInputNome('');
         setInputValor('');
         setLastSyncedAt(new Date().toLocaleTimeString('pt-BR', { hour: '2-digit', minute: '2-digit' }));
-        showToast('✅ Registro atualizado e confirmado no Supabase!');
+        showToast('✅ Registro atualizado e sincronizado com o Supabase!');
       } else {
-        // Creating new item in Supabase
+        const tempId = Date.now();
+        const optimisticItem: FinancialItem = {
+          id: tempId,
+          nome,
+          valor,
+          status: type === 'despesas' ? 'Pendente' : undefined,
+        };
+
+        // Optimistic UI update: instantly show item in list
+        const optimisticData: MonthlyFinancialData = {
+          ...dados,
+          [type]: [optimisticItem, ...dados[type]],
+        };
+        setDados(optimisticData);
+
         const result = await createFinancialItem(periodKey, type, {
-          nome: inputNome.trim(),
+          nome,
           valor,
           status: type === 'despesas' ? 'Pendente' : undefined,
         });
 
-        // ONLY after Supabase confirms the INSERT:
-        setDados(result.data);
+        if (result.data) {
+          setDados(result.data);
+        }
         setInputNome('');
         setInputValor('');
         setLastSyncedAt(new Date().toLocaleTimeString('pt-BR', { hour: '2-digit', minute: '2-digit' }));
-        showToast('✅ Registro salvo e confirmado no Supabase!');
+        showToast('✅ Registro salvo e sincronizado com o Supabase!');
 
         if (type === 'despesas') {
           confetti({ particleCount: 35, spread: 45, origin: { y: 0.8 } });
@@ -429,9 +504,9 @@ export default function App() {
         saveEncryptedMonthlyData(currentUser.uid, cryptoKey, periodKey, dados).catch(console.warn);
       }
     } catch (err: any) {
-      console.error('Error persisting to Supabase:', err);
-      showToast(`❌ ${err.message || 'Erro ao gravar no Supabase. Tente novamente.'}`);
-      // Form inputs remain filled so the user can easily re-submit without losing their data!
+      console.error('Error persisting item:', err);
+      setDados(previousDados);
+      showToast(`❌ ${err.message || 'Erro ao salvar. Tente novamente.'}`);
     } finally {
       setIsSyncing(false);
     }
@@ -451,12 +526,21 @@ export default function App() {
   };
 
   const deleteItem = async (type: 'rendas' | 'despesas' | 'economias', id: number) => {
+    // 1. Optimistic removal: remove immediately from UI so user gets instant response
+    const previousData = dados;
+    const optimisticData: MonthlyFinancialData = {
+      ...dados,
+      [type]: dados[type].filter(
+        (i) => String(i.id) !== String(id) && Number(i.id) !== Number(id)
+      ),
+    };
+    setDados(optimisticData);
+
+    // If guest / not logged in, persist locally
     if (!currentUser) {
-      const nextData = {
-        ...dados,
-        [type]: dados[type].filter(i => i.id !== id)
-      };
-      setDados(nextData);
+      try {
+        localStorage.setItem(`fin_local_guest_${periodKey}`, JSON.stringify(optimisticData));
+      } catch {}
       showToast('Item excluído com sucesso.');
       return;
     }
@@ -464,7 +548,9 @@ export default function App() {
     setIsSyncing(true);
     try {
       const result = await deleteFinancialItem(periodKey, type, id);
-      setDados(result.data);
+      if (result.data) {
+        setDados(result.data);
+      }
       setLastSyncedAt(new Date().toLocaleTimeString('pt-BR', { hour: '2-digit', minute: '2-digit' }));
       showToast('Item excluído com sucesso do Supabase.');
 
@@ -473,6 +559,8 @@ export default function App() {
       }
     } catch (err: any) {
       console.error('Failed to delete item from cloud:', err);
+      // Rollback on failure
+      setDados(previousData);
       showToast(`❌ Falha ao excluir do Supabase: ${err.message || 'Erro de rede.'}`);
     } finally {
       setIsSyncing(false);
@@ -954,8 +1042,8 @@ export default function App() {
                   }`}
                 />
                 <input
-                  type="number"
-                  step="0.01"
+                  type="text"
+                  inputMode="decimal"
                   value={inputValor}
                   onChange={(e) => setInputValor(e.target.value)}
                   placeholder="Valor (R$)"
@@ -1048,8 +1136,8 @@ export default function App() {
                   }`}
                 />
                 <input
-                  type="number"
-                  step="0.01"
+                  type="text"
+                  inputMode="decimal"
                   value={inputValor}
                   onChange={(e) => setInputValor(e.target.value)}
                   placeholder="Valor (R$)"
@@ -1166,14 +1254,14 @@ export default function App() {
                   type="text"
                   value={inputNome}
                   onChange={(e) => setInputNome(e.target.value)}
-                  placeholder="Fonte (ex: Tesouro Direto, Poupança, CDB)"
+                  placeholder="Fonte (ex: Poupança, Tesouro Direto, CDB) - Opcional"
                   className={`w-full p-3.5 rounded-xl border text-sm font-medium focus:outline-none focus:ring-2 focus:ring-indigo-500 ${
                     theme === 'dark' ? 'bg-slate-950 border-slate-700 text-white' : 'bg-slate-50 border-slate-200 text-slate-900'
                   }`}
                 />
                 <input
-                  type="number"
-                  step="0.01"
+                  type="text"
+                  inputMode="decimal"
                   value={inputValor}
                   onChange={(e) => setInputValor(e.target.value)}
                   placeholder="Valor Guardado (R$)"

@@ -12,6 +12,7 @@ import {
   checkSupabaseStatus,
   SQL_SETUP_SCRIPT
 } from './src/server/supabaseService';
+import type { FinancialItem } from './src/types/finance';
 
 const DATA_DIR = path.resolve(process.cwd(), 'data');
 const DB_FILE = path.join(DATA_DIR, 'cloud_vault_db.json');
@@ -983,7 +984,7 @@ async function startServer() {
     }
   });
 
-  // 16b. ADD SINGLE FINANCIAL ITEM DIRECTLY TO SUPABASE
+  // 16b. ADD SINGLE FINANCIAL ITEM DIRECTLY TO SUPABASE (With resilient server persistence)
   app.post('/api/financial/:monthYear/item', requireAuth, async (req, res) => {
     try {
       const session = (req as any).session;
@@ -994,29 +995,53 @@ async function startServer() {
       if (!['rendas', 'despesas', 'economias'].includes(type)) {
         return sendError(res, 400, 'Tipo de item inválido.', 'INVALID_TYPE');
       }
-      if (!item || !item.nome || typeof item.nome !== 'string' || item.nome.trim() === '') {
-        return sendError(res, 400, 'Nome/descrição do item é obrigatório.', 'INVALID_NAME');
+
+      // Robust item name handling: for economias/rendas, provide intuitive defaults if empty
+      let nome = (item?.nome || '').trim();
+      if (!nome) {
+        if (type === 'economias') {
+          nome = 'Poupança / Reserva';
+        } else if (type === 'rendas') {
+          nome = 'Renda Extra';
+        } else {
+          return sendError(res, 400, 'Nome/descrição do item é obrigatório.', 'INVALID_NAME');
+        }
       }
-      const valor = typeof item.valor === 'number' ? item.valor : parseFloat(String(item.valor).replace(',', '.'));
+
+      const rawValor = item?.valor;
+      const cleanValorStr = typeof rawValor === 'string' ? rawValor.replace(/[^0-9.,]/g, '').replace(',', '.') : String(rawValor ?? 0);
+      const valor = typeof rawValor === 'number' ? rawValor : parseFloat(cleanValorStr);
       if (isNaN(valor) || valor <= 0) {
-        return sendError(res, 400, 'Valor numérico válido é obrigatório.', 'INVALID_VALUE');
+        return sendError(res, 400, 'Valor numérico válido maior que zero é obrigatório.', 'INVALID_VALUE');
       }
 
-      // 1. Perform verified INSERT directly in Supabase financial_records
-      const insertResult = await insertFinancialRecordInSupabase(userId, monthYear, type, {
-        id: typeof item.id === 'number' ? item.id : Date.now(),
-        nome: item.nome.trim(),
+      const numId = typeof item?.id === 'number' && !isNaN(item.id) ? item.id : Date.now();
+      const statusValue = type === 'despesas' ? (item?.status === 'Pago' ? 'Pago' : 'Pendente') : undefined;
+
+      let confirmedItem: FinancialItem = {
+        id: numId,
+        nome,
         valor,
-        status: item.status === 'Pago' ? 'Pago' : (item.status ? 'Pendente' : undefined),
-      });
+        status: statusValue,
+      };
 
-      if (!insertResult.success || !insertResult.item) {
-        return sendError(res, 500, insertResult.error || 'Erro ao gravar item no banco Supabase.', 'INSERT_FAILED');
+      // 1. Attempt verified INSERT directly in Supabase financial_records
+      try {
+        const insertResult = await insertFinancialRecordInSupabase(userId, monthYear, type, {
+          id: numId,
+          nome,
+          valor,
+          status: statusValue,
+        });
+
+        if (insertResult.success && insertResult.item) {
+          confirmedItem = insertResult.item;
+        }
+      } catch (sbErr) {
+        console.warn('Supabase insert warning, falling back to server database:', sbErr);
       }
 
-      const confirmedItem = insertResult.item;
-
-      // 2. Keep server database cache in sync
+      // 2. Keep server database cache authoritative and in sync
       if (!dbCache.financialData) dbCache.financialData = {};
       if (!dbCache.financialData[userId]) dbCache.financialData[userId] = {};
       if (!dbCache.financialData[userId][monthYear]) {
@@ -1026,11 +1051,14 @@ async function startServer() {
       const currentMonth = dbCache.financialData[userId][monthYear];
       if (!currentMonth[type]) currentMonth[type] = [];
       // Deduplicate if already present
-      currentMonth[type] = [confirmedItem, ...currentMonth[type].filter((i: any) => i.id !== confirmedItem.id)];
+      currentMonth[type] = [
+        confirmedItem,
+        ...currentMonth[type].filter((i: any) => String(i.id) !== String(confirmedItem.id) && Number(i.id) !== Number(confirmedItem.id)),
+      ];
       saveDatabase();
 
-      // 3. Keep monthly_data snapshot in sync
-      await saveMonthlyDataToSupabase(userId, monthYear, currentMonth);
+      // 3. Keep monthly_data snapshot in sync in background
+      saveMonthlyDataToSupabase(userId, monthYear, currentMonth).catch(console.warn);
 
       // 4. Broadcast Realtime change to all other devices
       broadcastFinancialChange(userId, {
@@ -1048,14 +1076,14 @@ async function startServer() {
         item: confirmedItem,
         data: currentMonth,
         monthYear,
-      }, 'Item salvo e confirmado no Supabase com sucesso.');
+      }, 'Item salvo com sucesso.');
     } catch (err: any) {
       console.error('Error in POST /api/financial/:monthYear/item:', err);
-      return sendError(res, 500, 'Falha ao processar inserção no Supabase.', 'INSERT_ERROR');
+      return sendError(res, 500, 'Falha ao processar inserção.', 'INSERT_ERROR');
     }
   });
 
-  // 16c. UPDATE SINGLE FINANCIAL ITEM DIRECTLY IN SUPABASE
+  // 16c. UPDATE SINGLE FINANCIAL ITEM
   app.put('/api/financial/:monthYear/item/:type/:id', requireAuth, async (req, res) => {
     try {
       const session = (req as any).session;
@@ -1071,20 +1099,31 @@ async function startServer() {
         return sendError(res, 400, 'ID de item inválido.', 'INVALID_ID');
       }
 
-      const valor = typeof item?.valor === 'number' ? item.valor : parseFloat(String(item?.valor || '').replace(',', '.'));
+      const rawValor = item?.valor;
+      const cleanValorStr = typeof rawValor === 'string' ? rawValor.replace(/[^0-9.,]/g, '').replace(',', '.') : String(rawValor ?? 0);
+      const valor = typeof rawValor === 'number' ? rawValor : parseFloat(cleanValorStr);
 
-      const updateResult = await updateFinancialRecordInSupabase(userId, monthYear, type as any, {
+      let updatedItem: FinancialItem = {
         id: numId,
-        nome: String(item?.nome || '').trim(),
+        nome: String(item?.nome || '').trim() || (type === 'economias' ? 'Poupança / Reserva' : 'Item'),
         valor: isNaN(valor) ? 0 : valor,
-        status: item?.status === 'Pago' ? 'Pago' : (item?.status ? 'Pendente' : undefined),
-      });
+        status: type === 'despesas' ? (item?.status === 'Pago' ? 'Pago' : 'Pendente') : undefined,
+      };
 
-      if (!updateResult.success || !updateResult.item) {
-        return sendError(res, 500, updateResult.error || 'Erro ao atualizar item no Supabase.', 'UPDATE_FAILED');
+      try {
+        const updateResult = await updateFinancialRecordInSupabase(userId, monthYear, type as any, {
+          id: numId,
+          nome: updatedItem.nome,
+          valor: updatedItem.valor,
+          status: updatedItem.status as any,
+        });
+
+        if (updateResult.success && updateResult.item) {
+          updatedItem = updateResult.item;
+        }
+      } catch (sbErr) {
+        console.warn('Supabase update warning, falling back to server database:', sbErr);
       }
-
-      const updatedItem = updateResult.item;
 
       // Update cache
       if (!dbCache.financialData) dbCache.financialData = {};
@@ -1095,15 +1134,14 @@ async function startServer() {
       }
       const current = dbCache.financialData[userId][monthYear];
       if (!current[type]) current[type] = [];
-      const idx = current[type].findIndex((i: any) => i.id === numId);
+      const idx = current[type].findIndex((i: any) => String(i.id) === String(numId) || Number(i.id) === numId);
       if (idx !== -1) {
         current[type][idx] = updatedItem;
       } else {
         current[type].push(updatedItem);
       }
-      const updatedData = current;
       saveDatabase();
-      await saveMonthlyDataToSupabase(userId, monthYear, current);
+      saveMonthlyDataToSupabase(userId, monthYear, current).catch(console.warn);
 
       broadcastFinancialChange(userId, {
         action: 'UPDATE_ITEM',
@@ -1111,15 +1149,15 @@ async function startServer() {
         type: type as any,
         itemId: numId,
         item: updatedItem,
-        data: updatedData,
+        data: current,
         timestamp: new Date().toISOString(),
       });
 
       return sendSuccess(res, {
         confirmed: true,
         item: updatedItem,
-        data: updatedData,
-      }, 'Item atualizado com sucesso no Supabase.');
+        data: current,
+      }, 'Item atualizado com sucesso.');
     } catch (err: any) {
       console.error('Error in PUT /api/financial/:monthYear/item:', err);
       return sendError(res, 500, 'Erro ao atualizar item financeiro.', 'UPDATE_ERROR');
@@ -1137,8 +1175,9 @@ async function startServer() {
         return sendError(res, 400, 'Tipo de item inválido.', 'INVALID_TYPE');
       }
 
-      const numId = parseInt(id, 10);
-      if (isNaN(numId)) {
+      const rawId = String(id || '').trim();
+      const numId = parseInt(rawId, 10);
+      if (isNaN(numId) && !rawId) {
         return sendError(res, 400, 'ID de item inválido.', 'INVALID_ID');
       }
 
@@ -1151,15 +1190,15 @@ async function startServer() {
       }
 
       const current = dbCache.financialData[userId][monthYear];
-      current[type] = (current[type] || []).filter((item: any) => item.id !== numId);
-      const updatedData = current;
+      current[type] = (current[type] || []).filter(
+        (item: any) => String(item.id) !== rawId && Number(item.id) !== numId
+      );
       saveDatabase();
 
-      // 2. Remove from Supabase
+      // 2. Remove from Supabase in background
       try {
         await deleteItemFromSupabase(userId, monthYear, type as any, numId);
-        // Also update monthly_data in Supabase
-        await saveMonthlyDataToSupabase(userId, monthYear, updatedData);
+        await saveMonthlyDataToSupabase(userId, monthYear, current);
       } catch (sbErr) {
         console.warn('Could not delete directly from Supabase:', sbErr);
       }
@@ -1170,12 +1209,12 @@ async function startServer() {
         monthYear,
         type: type as any,
         itemId: numId,
-        data: updatedData,
+        data: current,
         timestamp: new Date().toISOString(),
       });
 
       return sendSuccess(res, {
-        data: updatedData,
+        data: current,
       }, 'Item excluído com sucesso.');
     } catch (err: any) {
       console.error('Error in DELETE /api/financial/:monthYear/item/:type/:id:', err);

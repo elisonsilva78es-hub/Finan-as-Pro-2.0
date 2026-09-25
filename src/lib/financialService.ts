@@ -1,4 +1,4 @@
-import { safeApiCall, cloudFetch } from './authService';
+import { safeApiCall, cloudFetch, getActiveUser } from './authService';
 import type { MonthlyFinancialData, FinancialItem } from '../types/finance';
 
 const DEFAULT_FINANCIAL_DATA: MonthlyFinancialData = {
@@ -28,8 +28,9 @@ export interface ConfirmedItemResponse {
 export async function createFinancialItem(
   monthYear: string,
   type: 'rendas' | 'despesas' | 'economias',
-  item: { nome: string; valor: number; status?: 'Pago' | 'Pendente' }
+  item: { nome?: string; valor: number; status?: 'Pago' | 'Pendente' }
 ): Promise<ConfirmedItemResponse> {
+  const user = getActiveUser();
   const res = await safeApiCall<ConfirmedItemResponse>(
     `/api/financial/${monthYear}/item`,
     {
@@ -37,39 +38,7 @@ export async function createFinancialItem(
       body: JSON.stringify({
         type,
         item: {
-          nome: item.nome.trim(),
-          valor: item.valor,
-          status: type === 'despesas' ? (item.status === 'Pago' ? 'Pago' : 'Pendente') : undefined,
-        },
-      }),
-    }
-  );
-
-  if (!res.success || !res.data?.item) {
-    const errorMsg = res.error || 'Falha ao gravar registro no Supabase. Verifique sua conexão e tente novamente.';
-    throw new Error(errorMsg);
-  }
-
-  return res.data;
-}
-
-/**
- * Explicitly update an existing financial record in Supabase
- * Updates both granular financial_records and monthly_data snapshot.
- */
-export async function updateFinancialItem(
-  monthYear: string,
-  type: 'rendas' | 'despesas' | 'economias',
-  item: { id: number; nome: string; valor: number; status?: 'Pago' | 'Pendente' }
-): Promise<ConfirmedItemResponse> {
-  const res = await safeApiCall<ConfirmedItemResponse>(
-    `/api/financial/${monthYear}/item/${type}/${item.id}`,
-    {
-      method: 'PUT',
-      body: JSON.stringify({
-        item: {
-          id: item.id,
-          nome: item.nome.trim(),
+          nome: (item.nome || '').trim(),
           valor: item.valor,
           status: type === 'despesas' ? (item.status === 'Pago' ? 'Pago' : 'Pendente') : undefined,
         },
@@ -78,22 +47,85 @@ export async function updateFinancialItem(
   );
 
   if (!res.success || !res.data) {
-    const errorMsg = res.error || 'Falha ao atualizar registro no Supabase. Tente novamente.';
+    const errorMsg = res.error || 'Falha ao salvar registro. Verifique sua conexão e tente novamente.';
     throw new Error(errorMsg);
+  }
+
+  // Update local cache with latest data
+  if (user && res.data.data) {
+    try {
+      localStorage.setItem(`fin_local_${user.uid}_${monthYear}`, JSON.stringify(res.data.data));
+    } catch {}
   }
 
   return res.data;
 }
 
 /**
- * Explicitly delete a financial record from Supabase
- * Deletes from financial_records and updates monthly_data snapshot.
+ * Explicitly update an existing financial record in Supabase & cloud backend
+ */
+export async function updateFinancialItem(
+  monthYear: string,
+  type: 'rendas' | 'despesas' | 'economias',
+  item: { id: number; nome?: string; valor: number; status?: 'Pago' | 'Pendente' }
+): Promise<ConfirmedItemResponse> {
+  const user = getActiveUser();
+  const res = await safeApiCall<ConfirmedItemResponse>(
+    `/api/financial/${monthYear}/item/${type}/${item.id}`,
+    {
+      method: 'PUT',
+      body: JSON.stringify({
+        item: {
+          id: item.id,
+          nome: (item.nome || '').trim(),
+          valor: item.valor,
+          status: type === 'despesas' ? (item.status === 'Pago' ? 'Pago' : 'Pendente') : undefined,
+        },
+      }),
+    }
+  );
+
+  if (!res.success || !res.data) {
+    const errorMsg = res.error || 'Falha ao atualizar registro. Tente novamente.';
+    throw new Error(errorMsg);
+  }
+
+  if (user && res.data.data) {
+    try {
+      localStorage.setItem(`fin_local_${user.uid}_${monthYear}`, JSON.stringify(res.data.data));
+    } catch {}
+  }
+
+  return res.data;
+}
+
+/**
+ * Explicitly delete a financial record from Supabase & cloud backend
  */
 export async function deleteFinancialItem(
   monthYear: string,
   type: 'rendas' | 'despesas' | 'economias',
   itemId: number
 ): Promise<{ confirmed: boolean; data: MonthlyFinancialData }> {
+  const user = getActiveUser();
+
+  // Optimistically remove from local cache immediately
+  if (user) {
+    const cacheKey = `fin_local_${user.uid}_${monthYear}`;
+    try {
+      const raw = localStorage.getItem(cacheKey);
+      if (raw) {
+        const parsed = JSON.parse(raw);
+        if (parsed && Array.isArray(parsed[type])) {
+          parsed[type] = parsed[type].filter(
+            (i: any) => String(i.id) !== String(itemId) && Number(i.id) !== Number(itemId)
+          );
+          localStorage.setItem(cacheKey, JSON.stringify(parsed));
+        }
+      }
+    } catch {}
+  }
+
   const res = await safeApiCall<{ data: MonthlyFinancialData }>(
     `/api/financial/${monthYear}/item/${type}/${itemId}`,
     {
@@ -101,14 +133,26 @@ export async function deleteFinancialItem(
     }
   );
 
-  if (!res.success || !res.data?.data) {
-    const errorMsg = res.error || 'Falha ao excluir registro do Supabase. Tente novamente.';
+  if (!res.success || !res.data) {
+    const errorMsg = res.error || 'Falha ao excluir registro. Tente novamente.';
     throw new Error(errorMsg);
+  }
+
+  const confirmedData: MonthlyFinancialData = res.data.data || {
+    rendas: [],
+    despesas: [],
+    economias: [],
+  };
+
+  if (user) {
+    try {
+      localStorage.setItem(`fin_local_${user.uid}_${monthYear}`, JSON.stringify(confirmedData));
+    } catch {}
   }
 
   return {
     confirmed: true,
-    data: res.data.data,
+    data: confirmedData,
   };
 }
 

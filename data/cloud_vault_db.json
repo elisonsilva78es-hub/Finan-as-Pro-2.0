@@ -244,26 +244,13 @@
     },
     "usr_g_3c194fd4dec0e0af": {
       "09_2026": {
-        "rendas": [
-          {
-            "id": 111,
-            "nome": "Salário Teste",
-            "valor": 5500
-          }
-        ],
-        "despesas": [
-          {
-            "id": 222,
-            "nome": "Conta de Luz",
-            "valor": 250,
-            "status": "Pendente"
-          }
-        ],
+        "rendas": [],
+        "despesas": [],
         "economias": [
           {
-            "id": 333,
-            "nome": "Reserva",
-            "valor": 1000
+            "id": 1790346603402,
+            "nome": "Tesouro Selic",
+            "valor": 500
           }
         ]
       }
