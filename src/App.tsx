@@ -21,7 +21,8 @@ import {
   Info,
   KeyRound,
   Copy,
-  ArrowUpDown
+  ArrowUpDown,
+  Database
 } from 'lucide-react';
 import confetti from 'canvas-confetti';
 import { 
@@ -33,11 +34,18 @@ import { AuthModal } from './components/AuthModal';
 import { PassphraseModal } from './components/PassphraseModal';
 import { ImportModal } from './components/ImportModal';
 import { DataTransferModal } from './components/DataTransferModal';
+import { SupabaseModal } from './components/SupabaseModal';
 import { 
   createExportPackage, 
   parseImportedFinancialData,
   findLegacyBrowserData 
 } from './lib/dataSync';
+import { 
+  loadMonthlyFinancialData,
+  saveMonthlyFinancialData,
+  deleteMonthlyFinancialItem,
+  migrateLocalDataToCloud
+} from './lib/financialService';
 import { 
   getOrCreateUserProfile, 
   initializeUserSecurity, 
@@ -62,6 +70,8 @@ export default function App() {
   const [cryptoKey, setCryptoKey] = useState<CryptoKey | null>(null);
   const [showPassphraseModal, setShowPassphraseModal] = useState(false);
   const [showDataTransferModal, setShowDataTransferModal] = useState(false);
+  const [showSupabaseModal, setShowSupabaseModal] = useState(false);
+  const [cloudSource, setCloudSource] = useState<'supabase' | 'cloud' | 'cache'>('cloud');
   
   // Theme & Period state
   const [theme, setTheme] = useState<'light' | 'dark'>('light');
@@ -137,12 +147,24 @@ export default function App() {
 
       if (user) {
         try {
+          const currentPeriod = `${selectedMonth}_${selectedYear}`;
+          // 1. Immediately fetch persisted financial data from Supabase / Cloud
+          const res = await loadMonthlyFinancialData(user.uid, currentPeriod);
+          if (res && res.data) {
+            setDados(res.data);
+            setCloudSource(res.source);
+            setLastSyncedAt(new Date().toLocaleTimeString('pt-BR', { hour: '2-digit', minute: '2-digit' }));
+          }
+
+          // 2. Automatically sync any local device historical data to cloud in background
+          migrateLocalDataToCloud(user.uid).catch(console.warn);
+
+          // 3. Optional E2EE profile check (does not block access to financial data)
           const { profile, isNewUser: isNew } = await getOrCreateUserProfile(user);
           setUserProfile(profile);
           setIsNewUser(isNew);
-          setShowPassphraseModal(true);
         } catch (err) {
-          console.error('Error fetching user profile:', err);
+          console.error('Error fetching user profile / data:', err);
         }
       } else {
         setCryptoKey(null);
@@ -153,7 +175,7 @@ export default function App() {
     });
 
     return () => unsubscribe();
-  }, []);
+  }, [selectedMonth, selectedYear]);
 
   // Handle Passphrase Unlock
   const handlePassphraseUnlock = async (passphrase: string): Promise<boolean> => {
@@ -210,75 +232,94 @@ export default function App() {
     showToast('Cofre redefinido. Crie sua nova chave mestra.');
   };
 
-  // Fetch monthly records when period changes or vault unlocked
+  // Fetch monthly records when period changes or window regains focus (cross-device sync)
   const periodKey = `${selectedMonth}_${selectedYear}`;
 
   useEffect(() => {
-    if (!currentUser || !cryptoKey) return;
+    if (!currentUser) return;
 
     let isMounted = true;
     async function fetchData() {
       setIsSyncing(true);
       try {
-        const cloudData = await loadEncryptedMonthlyData(currentUser!.uid, cryptoKey!, periodKey);
-        if (isMounted) {
-          if (cloudData) {
-            setDados(cloudData);
-            setLastSyncedAt(new Date().toLocaleTimeString('pt-BR', { hour: '2-digit', minute: '2-digit' }));
-          } else {
-            // Check local fallback or blank
-            const local = localStorage.getItem(`fin_local_${currentUser!.uid}_${periodKey}`);
-            if (local) {
-              setDados(JSON.parse(local));
-            } else {
-              setDados({ rendas: [], despesas: [], economias: [] });
-            }
-          }
+        const res = await loadMonthlyFinancialData(currentUser!.uid, periodKey);
+        if (isMounted && res && res.data) {
+          setDados(res.data);
+          setCloudSource(res.source);
+          setLastSyncedAt(new Date().toLocaleTimeString('pt-BR', { hour: '2-digit', minute: '2-digit' }));
         }
       } catch (err) {
-        console.error('Failed to load encrypted data:', err);
+        console.error('Failed to load financial data:', err);
       } finally {
         if (isMounted) setIsSyncing(false);
       }
     }
 
     fetchData();
-    return () => { isMounted = false; };
-  }, [currentUser, cryptoKey, periodKey]);
 
-  // Persist encrypted data on change
+    // Auto-refresh when user returns to tab (e.g. edited on phone, now viewing on PC)
+    const handleVisibilityOrFocus = () => {
+      if (document.visibilityState === 'visible') {
+        fetchData();
+      }
+    };
+
+    window.addEventListener('focus', handleVisibilityOrFocus);
+    document.addEventListener('visibilitychange', handleVisibilityOrFocus);
+
+    // Periodic check every 25 seconds if window is active
+    const interval = setInterval(() => {
+      if (document.visibilityState === 'visible') {
+        fetchData();
+      }
+    }, 25000);
+
+    return () => {
+      isMounted = false;
+      window.removeEventListener('focus', handleVisibilityOrFocus);
+      document.removeEventListener('visibilitychange', handleVisibilityOrFocus);
+      clearInterval(interval);
+    };
+  }, [currentUser, periodKey]);
+
+  // Persist financial data to Cloud Server & Supabase (source of truth)
   const persistData = async (newData: MonthlyFinancialData) => {
     setDados(newData);
     if (!currentUser) return;
 
-    // Cache local encrypted fallback
-    localStorage.setItem(`fin_local_${currentUser.uid}_${periodKey}`, JSON.stringify(newData));
+    setIsSyncing(true);
+    try {
+      const saved = await saveMonthlyFinancialData(currentUser.uid, periodKey, newData);
+      setDados(saved);
+      setLastSyncedAt(new Date().toLocaleTimeString('pt-BR', { hour: '2-digit', minute: '2-digit' }));
 
-    if (cryptoKey) {
-      setIsSyncing(true);
-      try {
-        await saveEncryptedMonthlyData(currentUser.uid, cryptoKey, periodKey, newData);
-        setLastSyncedAt(new Date().toLocaleTimeString('pt-BR', { hour: '2-digit', minute: '2-digit' }));
-      } catch (err) {
-        console.error('Failed to sync encrypted data to Cloud Server:', err);
-      } finally {
-        setIsSyncing(false);
+      // If user has optional E2EE cryptoKey unlocked, also keep E2EE vault in sync
+      if (cryptoKey) {
+        saveEncryptedMonthlyData(currentUser.uid, cryptoKey, periodKey, saved).catch(console.warn);
       }
+    } catch (err) {
+      console.error('Failed to sync financial data to cloud:', err);
+    } finally {
+      setIsSyncing(false);
     }
   };
 
   // Manual Cloud Sync Trigger
   const handleManualSync = async () => {
-    if (!currentUser || !cryptoKey) {
-      showToast('Desbloqueie o cofre para sincronizar na nuvem.');
+    if (!currentUser) {
+      showToast('Faça login para sincronizar na nuvem.');
       return;
     }
     setIsSyncing(true);
     try {
-      await saveEncryptedMonthlyData(currentUser.uid, cryptoKey, periodKey, dados);
-      await syncLocalRecordsToCloud(currentUser.uid, cryptoKey);
+      await saveMonthlyFinancialData(currentUser.uid, periodKey, dados);
+      await migrateLocalDataToCloud(currentUser.uid);
+      if (cryptoKey) {
+        await saveEncryptedMonthlyData(currentUser.uid, cryptoKey, periodKey, dados);
+        await syncLocalRecordsToCloud(currentUser.uid, cryptoKey);
+      }
       setLastSyncedAt(new Date().toLocaleTimeString('pt-BR', { hour: '2-digit', minute: '2-digit' }));
-      showToast('☁️ Todos os registros foram salvos e sincronizados na nuvem!');
+      showToast('☁️ Todos os registros foram salvos e sincronizados com o Supabase!');
     } catch (err) {
       console.warn('Manual sync error:', err);
       showToast('Aviso ao sincronizar na nuvem. Verifique sua conexão.');
@@ -337,13 +378,37 @@ export default function App() {
     setEditingId(null);
   };
 
-  const deleteItem = (type: 'rendas' | 'despesas' | 'economias', id: number) => {
-    const nextData = {
-      ...dados,
-      [type]: dados[type].filter(i => i.id !== id)
-    };
-    persistData(nextData);
-    showToast('Item excluído com sucesso.');
+  const deleteItem = async (type: 'rendas' | 'despesas' | 'economias', id: number) => {
+    if (!currentUser) {
+      const nextData = {
+        ...dados,
+        [type]: dados[type].filter(i => i.id !== id)
+      };
+      setDados(nextData);
+      showToast('Item excluído com sucesso.');
+      return;
+    }
+
+    setIsSyncing(true);
+    try {
+      const updated = await deleteMonthlyFinancialItem(currentUser.uid, periodKey, type, id, dados);
+      setDados(updated);
+      setLastSyncedAt(new Date().toLocaleTimeString('pt-BR', { hour: '2-digit', minute: '2-digit' }));
+      showToast('Item excluído da nuvem com sucesso.');
+
+      if (cryptoKey) {
+        saveEncryptedMonthlyData(currentUser.uid, cryptoKey, periodKey, updated).catch(console.warn);
+      }
+    } catch (err) {
+      console.error('Failed to delete item from cloud:', err);
+      const fallback = {
+        ...dados,
+        [type]: dados[type].filter(i => i.id !== id)
+      };
+      setDados(fallback);
+    } finally {
+      setIsSyncing(false);
+    }
   };
 
   const toggleStatus = (id: number) => {
@@ -564,9 +629,14 @@ export default function App() {
                 <span>👑 Finanças Pro 2.0</span>
               </h1>
               <div className="flex items-center gap-1.5 mt-1 text-[11px] text-slate-500 dark:text-slate-400">
-                <span className="inline-flex items-center gap-1 text-emerald-600 dark:text-emerald-400 font-semibold">
-                  <Lock className="w-3 h-3" /> E2EE Ativo
-                </span>
+                <button
+                  type="button"
+                  onClick={() => setShowSupabaseModal(true)}
+                  className="inline-flex items-center gap-1 text-emerald-600 dark:text-emerald-400 font-semibold hover:underline cursor-pointer"
+                  title="Status da Nuvem Supabase"
+                >
+                  <Database className="w-3 h-3" /> Supabase Nuvem
+                </button>
                 <span>•</span>
                 <span className="truncate max-w-[130px] font-medium" title={currentUser.email || ''}>
                   {currentUser.displayName || currentUser.email?.split('@')[0]}
@@ -577,6 +647,20 @@ export default function App() {
 
           {/* Controls: Data Transfer, Theme & Logout */}
           <div className="flex items-center gap-2">
+            <button
+              type="button"
+              onClick={() => setShowSupabaseModal(true)}
+              className={`p-2 rounded-xl border transition-all flex items-center justify-center cursor-pointer active:scale-95 shadow-sm ${
+                theme === 'dark' 
+                  ? 'bg-slate-800 border-slate-700 text-emerald-400 hover:bg-slate-700' 
+                  : 'bg-emerald-50 border-emerald-200 text-emerald-600 hover:bg-emerald-100'
+              }`}
+              title="Nuvem Supabase (Sincronização Multi-Dispositivo)"
+              aria-label="Nuvem Supabase"
+            >
+              <Database className="w-4 h-4" />
+            </button>
+
             <button
               type="button"
               onClick={() => setShowDataTransferModal(true)}
@@ -1157,6 +1241,19 @@ export default function App() {
           persistData(legacyData);
           confetti({ particleCount: 75, spread: 70, origin: { y: 0.7 } });
           showToast('✅ Dados da versão anterior carregados com sucesso!');
+        }}
+      />
+
+      {/* Supabase Cloud Connection & Sync Modal */}
+      <SupabaseModal
+        isOpen={showSupabaseModal}
+        onClose={() => setShowSupabaseModal(false)}
+        onMigrateNow={async () => {
+          if (currentUser) {
+            await saveMonthlyFinancialData(currentUser.uid, periodKey, dados);
+            await migrateLocalDataToCloud(currentUser.uid);
+            showToast('Sincronização com Supabase concluída!');
+          }
         }}
       />
     </div>

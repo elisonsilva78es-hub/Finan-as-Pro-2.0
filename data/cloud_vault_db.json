@@ -9,6 +9,61 @@
       "accountSalt": "7pavnsMbaDLAeCrZ1T3CSw==",
       "recoveryPin": "153414",
       "updatedAt": "2026-09-24T17:14:21.090Z"
+    },
+    "usr_d8375f14cf7af854": {
+      "userId": "usr_d8375f14cf7af854",
+      "email": "test_device_a_1790320961162@example.com",
+      "displayName": "Device A User",
+      "provider": "email",
+      "passwordHash": "Kppg6F7Z+IDvh6QjgYwOiM89UfwM2WZbsFhTluq+8UY=",
+      "accountSalt": "Hkvp4xkXV9FclRykPmWwiA==",
+      "recoveryPin": "985862",
+      "createdAt": "2026-09-25T07:22:41.283Z",
+      "updatedAt": "2026-09-25T07:22:41.283Z"
+    },
+    "usr_b2c773f4878f71e0": {
+      "userId": "usr_b2c773f4878f71e0",
+      "email": "test_device_b_1790320961162@example.com",
+      "displayName": "User B",
+      "provider": "email",
+      "passwordHash": "NLTj7W2u9YP0CM2QEot5WyhW9q4LfUB7zPY+wCwo1Oo=",
+      "accountSalt": "Lb21VcyG9fgieNuxZM279Q==",
+      "recoveryPin": "919162",
+      "createdAt": "2026-09-25T07:22:41.355Z",
+      "updatedAt": "2026-09-25T07:22:41.355Z"
+    },
+    "usr_2f755e5f381a9571": {
+      "userId": "usr_2f755e5f381a9571",
+      "email": "test_device_a_1790320975046@example.com",
+      "displayName": "Device A User",
+      "provider": "email",
+      "passwordHash": "jjzTmCWsDVqAhF6H16eZPm+oQpmc5dpWBUfAwyh92Lg=",
+      "accountSalt": "u8yq9IbyqYvonr6F8WG6tw==",
+      "recoveryPin": "710559",
+      "createdAt": "2026-09-25T07:22:55.175Z",
+      "updatedAt": "2026-09-25T07:22:55.176Z"
+    },
+    "usr_72e29e4f04112aed": {
+      "userId": "usr_72e29e4f04112aed",
+      "email": "test_device_b_1790320975046@example.com",
+      "displayName": "User B",
+      "provider": "email",
+      "passwordHash": "X2B3+6JwbAeA9K5IH6zYNFrtZqZSuo6GaKUnc6HKciE=",
+      "accountSalt": "vyjV4VC3nnwGjasYKlvaBw==",
+      "recoveryPin": "423033",
+      "createdAt": "2026-09-25T07:22:58.744Z",
+      "updatedAt": "2026-09-25T07:22:58.744Z"
+    },
+    "usr_5e2a798aac2e2b04": {
+      "userId": "usr_5e2a798aac2e2b04",
+      "email": "test_device_a_1790321017241@example.com",
+      "displayName": "Test User",
+      "provider": "email",
+      "passwordHash": "Jfh6XM8ztG7psX8yYyOkSG0OdkgkNMuV90reyzyz8L4=",
+      "accountSalt": "U7bTPqWmj08Tr9j5+dFG/A==",
+      "recoveryPin": "600437",
+      "createdAt": "2026-09-25T07:23:37.377Z",
+      "updatedAt": "2026-09-25T07:23:37.377Z"
     }
   },
   "records": {},
@@ -39,6 +94,111 @@
       "provider": "google",
       "expiresAt": 1790874861090,
       "createdAt": "2026-09-24T17:14:21.090Z"
+    },
+    "3681c8fa08f1bc6a2bdbc85fead570ab6c8eed347919d0870a01218965b3a1c3": {
+      "token": "3681c8fa08f1bc6a2bdbc85fead570ab6c8eed347919d0870a01218965b3a1c3",
+      "userId": "usr_d8375f14cf7af854",
+      "email": "test_device_a_1790320961162@example.com",
+      "displayName": "Device A User",
+      "provider": "email",
+      "expiresAt": 1790925761283,
+      "createdAt": "2026-09-25T07:22:41.283Z"
+    },
+    "e2f0d509901d3d6a35a0a571231f6fb93c10c5c3c8a567afb507b5107af38c71": {
+      "token": "e2f0d509901d3d6a35a0a571231f6fb93c10c5c3c8a567afb507b5107af38c71",
+      "userId": "usr_d8375f14cf7af854",
+      "email": "test_device_a_1790320961162@example.com",
+      "displayName": "Device A User",
+      "provider": "email",
+      "expiresAt": 1790925761316,
+      "createdAt": "2026-09-25T07:22:41.316Z"
+    },
+    "512c0eb4f76d60acb697253255e2ce918f7965a72d5f1546282fad6347802a8d": {
+      "token": "512c0eb4f76d60acb697253255e2ce918f7965a72d5f1546282fad6347802a8d",
+      "userId": "usr_b2c773f4878f71e0",
+      "email": "test_device_b_1790320961162@example.com",
+      "displayName": "User B",
+      "provider": "email",
+      "expiresAt": 1790925761355,
+      "createdAt": "2026-09-25T07:22:41.355Z"
+    },
+    "6a8b24b44f0359b839a6e24770a6e840692d32fa9a8f877030a181136f2ed263": {
+      "token": "6a8b24b44f0359b839a6e24770a6e840692d32fa9a8f877030a181136f2ed263",
+      "userId": "usr_2f755e5f381a9571",
+      "email": "test_device_a_1790320975046@example.com",
+      "displayName": "Device A User",
+      "provider": "email",
+      "expiresAt": 1790925775176,
+      "createdAt": "2026-09-25T07:22:55.176Z"
+    },
+    "8988fd9bdd2ff96885d497c511121238b686a3463ccede680764778cccee828f": {
+      "token": "8988fd9bdd2ff96885d497c511121238b686a3463ccede680764778cccee828f",
+      "userId": "usr_2f755e5f381a9571",
+      "email": "test_device_a_1790320975046@example.com",
+      "displayName": "Device A User",
+      "provider": "email",
+      "expiresAt": 1790925776317,
+      "createdAt": "2026-09-25T07:22:56.317Z"
+    },
+    "c3761fc748b5473b7ae2788a96c16de73117cb817005aca4033ee091cf1674ce": {
+      "token": "c3761fc748b5473b7ae2788a96c16de73117cb817005aca4033ee091cf1674ce",
+      "userId": "usr_72e29e4f04112aed",
+      "email": "test_device_b_1790320975046@example.com",
+      "displayName": "User B",
+      "provider": "email",
+      "expiresAt": 1790925778744,
+      "createdAt": "2026-09-25T07:22:58.744Z"
+    },
+    "d4fa4d1fbe3a1fefd50a505e02cb49021726acd2bac84bd8cead384f9b955bf0": {
+      "token": "d4fa4d1fbe3a1fefd50a505e02cb49021726acd2bac84bd8cead384f9b955bf0",
+      "userId": "usr_5e2a798aac2e2b04",
+      "email": "test_device_a_1790321017241@example.com",
+      "displayName": "Test User",
+      "provider": "email",
+      "expiresAt": 1790925817377,
+      "createdAt": "2026-09-25T07:23:37.377Z"
+    }
+  },
+  "financialData": {
+    "usr_2f755e5f381a9571": {
+      "09_2026": {
+        "rendas": [
+          {
+            "id": 201,
+            "nome": "Salário",
+            "valor": 5000
+          }
+        ],
+        "despesas": [
+          {
+            "id": 102,
+            "nome": "Farmácia",
+            "valor": 75,
+            "status": "Pago"
+          }
+        ],
+        "economias": []
+      }
+    },
+    "usr_5e2a798aac2e2b04": {
+      "09_2026": {
+        "rendas": [
+          {
+            "id": 201,
+            "nome": "Salário",
+            "valor": 3500
+          }
+        ],
+        "despesas": [
+          {
+            "id": 101,
+            "nome": "Despesa Teste 150",
+            "valor": 150,
+            "status": "Pendente"
+          }
+        ],
+        "economias": []
+      }
     }
   }
 }

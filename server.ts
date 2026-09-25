@@ -3,6 +3,13 @@ import { createServer as createViteServer } from 'vite';
 import fs from 'fs';
 import path from 'path';
 import crypto from 'crypto';
+import {
+  getMonthlyDataFromSupabase,
+  saveMonthlyDataToSupabase,
+  deleteItemFromSupabase,
+  checkSupabaseStatus,
+  SQL_SETUP_SCRIPT
+} from './src/server/supabaseService';
 
 const DATA_DIR = path.resolve(process.cwd(), 'data');
 const DB_FILE = path.join(DATA_DIR, 'cloud_vault_db.json');
@@ -42,12 +49,14 @@ interface DatabaseSchema {
   users: Record<string, UserRecord>;
   records: Record<string, Record<string, any>>;
   sessions: Record<string, SessionRecord>;
+  financialData: Record<string, Record<string, any>>;
 }
 
 let dbCache: DatabaseSchema = {
   users: {},
   records: {},
   sessions: {},
+  financialData: {},
 };
 
 // Load database from file
@@ -63,6 +72,7 @@ function loadDatabase(): DatabaseSchema {
   if (!dbCache.users) dbCache.users = {};
   if (!dbCache.records) dbCache.records = {};
   if (!dbCache.sessions) dbCache.sessions = {};
+  if (!dbCache.financialData) dbCache.financialData = {};
   return dbCache;
 }
 
@@ -785,6 +795,201 @@ async function startServer() {
     sendSuccess(res, {
       count: Object.keys(dbCache.records[userId] || {}).length,
     });
+  });
+
+  // ==========================================
+  // FINANCIAL DATA & SUPABASE SYNC ENDPOINTS
+  // Strictly validated and isolated by session.userId
+  // ==========================================
+
+  // 15. GET MONTHLY FINANCIAL DATA (From Supabase with local fallback)
+  app.get('/api/financial/:monthYear', requireAuth, async (req, res) => {
+    try {
+      const session = (req as any).session;
+      const userId = session.userId;
+      const { monthYear } = req.params;
+
+      if (!monthYear || !/^\d{2}_\d{4}$/.test(monthYear)) {
+        return sendError(res, 400, 'Formato de mês/ano inválido. Use MM_AAAA (ex: 09_2026).', 'INVALID_PERIOD');
+      }
+
+      // 1. Try to load fresh data from Supabase first
+      let data = await getMonthlyDataFromSupabase(userId, monthYear);
+      let source = 'supabase';
+
+      // 2. If Supabase has no data or tables not created yet, fall back to backend cache
+      if (!data) {
+        if (!dbCache.financialData) dbCache.financialData = {};
+        if (!dbCache.financialData[userId]) dbCache.financialData[userId] = {};
+        data = dbCache.financialData[userId][monthYear] || null;
+        source = 'backend_cache';
+      } else {
+        // Keep backend cache fresh with Supabase data
+        if (!dbCache.financialData) dbCache.financialData = {};
+        if (!dbCache.financialData[userId]) dbCache.financialData[userId] = {};
+        dbCache.financialData[userId][monthYear] = data;
+        saveDatabase();
+      }
+
+      const defaultData = { rendas: [], despesas: [], economias: [] };
+      return sendSuccess(res, {
+        data: data || defaultData,
+        monthYear,
+        source,
+      });
+    } catch (err: any) {
+      console.error('Error in GET /api/financial/:monthYear:', err);
+      return sendError(res, 500, 'Erro ao carregar dados financeiros da nuvem.', 'FETCH_ERROR');
+    }
+  });
+
+  // 16. SAVE / SYNC MONTHLY FINANCIAL DATA (To Supabase & persistent server storage)
+  app.post('/api/financial/:monthYear', requireAuth, async (req, res) => {
+    try {
+      const session = (req as any).session;
+      const userId = session.userId;
+      const { monthYear } = req.params;
+
+      if (!monthYear || !/^\d{2}_\d{4}$/.test(monthYear)) {
+        return sendError(res, 400, 'Formato de mês/ano inválido. Use MM_AAAA.', 'INVALID_PERIOD');
+      }
+
+      const { rendas = [], despesas = [], economias = [] } = req.body || {};
+
+      // Sanitize and validate inputs
+      const sanitizeItems = (items: any[]): Array<{ id: number; nome: string; valor: number; status?: 'Pago' | 'Pendente' }> => {
+        if (!Array.isArray(items)) return [];
+        return items.map((item) => {
+          const statusValue: 'Pago' | 'Pendente' | undefined = item.status === 'Pago' ? 'Pago' : (item.status ? 'Pendente' : undefined);
+          return {
+            id: typeof item.id === 'number' ? item.id : Date.now() + Math.floor(Math.random() * 1000),
+            nome: String(item.nome || '').trim(),
+            valor: typeof item.valor === 'number' ? item.valor : parseFloat(String(item.valor).replace(',', '.')) || 0,
+            status: statusValue,
+          };
+        }).filter(i => i.nome.length > 0 && !isNaN(i.valor));
+      };
+
+      const cleanData = {
+        rendas: sanitizeItems(rendas),
+        despesas: sanitizeItems(despesas),
+        economias: sanitizeItems(economias),
+      };
+
+      // 1. Immediately persist in server database
+      if (!dbCache.financialData) dbCache.financialData = {};
+      if (!dbCache.financialData[userId]) dbCache.financialData[userId] = {};
+      dbCache.financialData[userId][monthYear] = cleanData;
+      saveDatabase();
+
+      // 2. Persist to Supabase in cloud
+      let supabaseOk = false;
+      try {
+        supabaseOk = await saveMonthlyDataToSupabase(userId, monthYear, cleanData);
+      } catch (sbErr) {
+        console.warn('Could not save directly to Supabase:', sbErr);
+      }
+
+      return sendSuccess(res, {
+        data: cleanData,
+        monthYear,
+        supabaseSynced: supabaseOk,
+      }, 'Dados financeiros salvos e sincronizados com sucesso.');
+    } catch (err: any) {
+      console.error('Error in POST /api/financial/:monthYear:', err);
+      return sendError(res, 500, 'Erro ao salvar dados financeiros.', 'SAVE_ERROR');
+    }
+  });
+
+  // 17. DELETE ITEM FROM FINANCIAL DATA
+  app.delete('/api/financial/:monthYear/item/:type/:id', requireAuth, async (req, res) => {
+    try {
+      const session = (req as any).session;
+      const userId = session.userId;
+      const { monthYear, type, id } = req.params;
+
+      if (!['rendas', 'despesas', 'economias'].includes(type)) {
+        return sendError(res, 400, 'Tipo de item inválido.', 'INVALID_TYPE');
+      }
+
+      const numId = parseInt(id, 10);
+      if (isNaN(numId)) {
+        return sendError(res, 400, 'ID de item inválido.', 'INVALID_ID');
+      }
+
+      // 1. Remove from server cache
+      let updatedData = { rendas: [], despesas: [], economias: [] };
+      if (dbCache.financialData?.[userId]?.[monthYear]) {
+        const current = dbCache.financialData[userId][monthYear];
+        current[type] = (current[type] || []).filter((item: any) => item.id !== numId);
+        updatedData = current;
+        saveDatabase();
+      }
+
+      // 2. Remove from Supabase
+      try {
+        await deleteItemFromSupabase(userId, monthYear, type as any, numId);
+        // Also update monthly_data in Supabase
+        await saveMonthlyDataToSupabase(userId, monthYear, updatedData);
+      } catch (sbErr) {
+        console.warn('Could not delete directly from Supabase:', sbErr);
+      }
+
+      return sendSuccess(res, {
+        data: updatedData,
+      }, 'Item excluído com sucesso.');
+    } catch (err: any) {
+      console.error('Error in DELETE /api/financial/:monthYear/item/:type/:id:', err);
+      return sendError(res, 500, 'Erro ao excluir item financeiro.', 'DELETE_ERROR');
+    }
+  });
+
+  // 18. SUPABASE STATUS & SQL SCRIPT HELPER
+  app.get('/api/supabase/status', requireAuth, async (_req, res) => {
+    try {
+      const status = await checkSupabaseStatus();
+      return sendSuccess(res, {
+        ...status,
+        sql: SQL_SETUP_SCRIPT,
+      });
+    } catch (err: any) {
+      return sendError(res, 500, 'Erro ao verificar status do Supabase.', 'SUPABASE_STATUS_ERROR');
+    }
+  });
+
+  // 19. BATCH MIGRATE ALL USER DATA TO SUPABASE
+  app.post('/api/supabase/migrate', requireAuth, async (req, res) => {
+    try {
+      const session = (req as any).session;
+      const userId = session.userId;
+      const clientData = req.body?.data || {};
+
+      let migratedMonths = 0;
+
+      // Merge server cache with client-provided local data
+      const allMonths: Record<string, any> = {
+        ...(dbCache.financialData?.[userId] || {}),
+        ...clientData,
+      };
+
+      for (const [mYear, mData] of Object.entries(allMonths)) {
+        if (mData && typeof mData === 'object') {
+          await saveMonthlyDataToSupabase(userId, mYear, mData);
+          if (!dbCache.financialData) dbCache.financialData = {};
+          if (!dbCache.financialData[userId]) dbCache.financialData[userId] = {};
+          dbCache.financialData[userId][mYear] = mData;
+          migratedMonths++;
+        }
+      }
+
+      saveDatabase();
+      return sendSuccess(res, {
+        migratedMonths,
+      }, `${migratedMonths} meses sincronizados com o Supabase com sucesso.`);
+    } catch (err: any) {
+      console.error('Error in /api/supabase/migrate:', err);
+      return sendError(res, 500, 'Erro durante a migração para o Supabase.', 'MIGRATE_ERROR');
+    }
   });
 
   // Explicit JSON 404 handler for any unmatched /api/* routes
