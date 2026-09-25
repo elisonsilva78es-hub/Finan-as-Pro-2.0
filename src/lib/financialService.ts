@@ -1,4 +1,4 @@
-import { cloudFetch } from './authService';
+import { safeApiCall, cloudFetch } from './authService';
 import type { MonthlyFinancialData, FinancialItem } from '../types/finance';
 
 const DEFAULT_FINANCIAL_DATA: MonthlyFinancialData = {
@@ -9,16 +9,118 @@ const DEFAULT_FINANCIAL_DATA: MonthlyFinancialData = {
 
 /**
  * Service to manage persistent financial data synchronized across all devices
- * with Supabase and Cloud Server as the official source of truth.
+ * with Supabase as the official cloud database and source of truth.
  */
 
-// Load financial data for a specific period (e.g. "09_2026")
+export interface ConfirmedItemResponse {
+  confirmed: boolean;
+  item: FinancialItem;
+  data: MonthlyFinancialData;
+  monthYear: string;
+}
+
+/**
+ * Explicitly create a new financial record in Supabase
+ * Strict persistence: only resolves when the database confirms the INSERT.
+ * If Supabase or the backend fails, throws an Error with details so the UI
+ * can notify the user and keep form inputs intact for retry.
+ */
+export async function createFinancialItem(
+  monthYear: string,
+  type: 'rendas' | 'despesas' | 'economias',
+  item: { nome: string; valor: number; status?: 'Pago' | 'Pendente' }
+): Promise<ConfirmedItemResponse> {
+  const res = await safeApiCall<ConfirmedItemResponse>(
+    `/api/financial/${monthYear}/item`,
+    {
+      method: 'POST',
+      body: JSON.stringify({
+        type,
+        item: {
+          nome: item.nome.trim(),
+          valor: item.valor,
+          status: type === 'despesas' ? (item.status === 'Pago' ? 'Pago' : 'Pendente') : undefined,
+        },
+      }),
+    }
+  );
+
+  if (!res.success || !res.data?.item) {
+    const errorMsg = res.error || 'Falha ao gravar registro no Supabase. Verifique sua conexão e tente novamente.';
+    throw new Error(errorMsg);
+  }
+
+  return res.data;
+}
+
+/**
+ * Explicitly update an existing financial record in Supabase
+ * Updates both granular financial_records and monthly_data snapshot.
+ */
+export async function updateFinancialItem(
+  monthYear: string,
+  type: 'rendas' | 'despesas' | 'economias',
+  item: { id: number; nome: string; valor: number; status?: 'Pago' | 'Pendente' }
+): Promise<ConfirmedItemResponse> {
+  const res = await safeApiCall<ConfirmedItemResponse>(
+    `/api/financial/${monthYear}/item/${type}/${item.id}`,
+    {
+      method: 'PUT',
+      body: JSON.stringify({
+        item: {
+          id: item.id,
+          nome: item.nome.trim(),
+          valor: item.valor,
+          status: type === 'despesas' ? (item.status === 'Pago' ? 'Pago' : 'Pendente') : undefined,
+        },
+      }),
+    }
+  );
+
+  if (!res.success || !res.data) {
+    const errorMsg = res.error || 'Falha ao atualizar registro no Supabase. Tente novamente.';
+    throw new Error(errorMsg);
+  }
+
+  return res.data;
+}
+
+/**
+ * Explicitly delete a financial record from Supabase
+ * Deletes from financial_records and updates monthly_data snapshot.
+ */
+export async function deleteFinancialItem(
+  monthYear: string,
+  type: 'rendas' | 'despesas' | 'economias',
+  itemId: number
+): Promise<{ confirmed: boolean; data: MonthlyFinancialData }> {
+  const res = await safeApiCall<{ data: MonthlyFinancialData }>(
+    `/api/financial/${monthYear}/item/${type}/${itemId}`,
+    {
+      method: 'DELETE',
+    }
+  );
+
+  if (!res.success || !res.data?.data) {
+    const errorMsg = res.error || 'Falha ao excluir registro do Supabase. Tente novamente.';
+    throw new Error(errorMsg);
+  }
+
+  return {
+    confirmed: true,
+    data: res.data.data,
+  };
+}
+
+/**
+ * Load financial data for a specific period (e.g. "09_2026")
+ * Supabase is the primary source of truth.
+ */
 export async function loadMonthlyFinancialData(
   userId: string,
   monthYear: string
 ): Promise<{ data: MonthlyFinancialData; source: 'supabase' | 'cloud' | 'cache' }> {
   try {
-    // 1. Fetch from persistent cloud / Supabase backend
     const response = await cloudFetch<{
       data: MonthlyFinancialData;
       source: string;
@@ -26,14 +128,12 @@ export async function loadMonthlyFinancialData(
 
     if (response && response.data) {
       const serverData = response.data;
-      // Ensure all arrays are present
       const cleanData: MonthlyFinancialData = {
         rendas: Array.isArray(serverData.rendas) ? serverData.rendas : [],
         despesas: Array.isArray(serverData.despesas) ? serverData.despesas : [],
         economias: Array.isArray(serverData.economias) ? serverData.economias : [],
       };
 
-      // Update local device cache
       try {
         localStorage.setItem(`fin_local_${userId}_${monthYear}`, JSON.stringify(cleanData));
       } catch {}
@@ -44,10 +144,10 @@ export async function loadMonthlyFinancialData(
       };
     }
   } catch (err) {
-    console.warn('Network error fetching from cloud, checking local cache:', err);
+    console.warn('Network error loading data from cloud:', err);
   }
 
-  // 2. Fallback to local device cache if offline or server temporarily unavailable
+  // Fallback to local cache only if offline
   try {
     const cached = localStorage.getItem(`fin_local_${userId}_${monthYear}`);
     if (cached) {
@@ -69,18 +169,15 @@ export async function loadMonthlyFinancialData(
   };
 }
 
-// Persist financial data to cloud server and Supabase
+/**
+ * Save monthly financial data snapshot to cloud server and Supabase
+ * Used primarily for batch updates or drag-and-drop reordering.
+ */
 export async function saveMonthlyFinancialData(
   userId: string,
   monthYear: string,
   data: MonthlyFinancialData
 ): Promise<MonthlyFinancialData> {
-  // 1. Immediately update local device cache for instant UI response
-  try {
-    localStorage.setItem(`fin_local_${userId}_${monthYear}`, JSON.stringify(data));
-  } catch {}
-
-  // 2. Persist to official cloud / Supabase backend
   try {
     const res = await cloudFetch<{ data: MonthlyFinancialData; supabaseSynced: boolean }>(
       `/api/financial/${monthYear}`,
@@ -95,53 +192,21 @@ export async function saveMonthlyFinancialData(
     );
 
     if (res && res.data) {
+      try {
+        localStorage.setItem(`fin_local_${userId}_${monthYear}`, JSON.stringify(res.data));
+      } catch {}
       return res.data;
     }
   } catch (err) {
-    console.warn('Could not persist to cloud immediately:', err);
+    console.warn('Could not persist monthly snapshot:', err);
   }
 
   return data;
 }
 
-// Delete an item from the cloud and update
-export async function deleteMonthlyFinancialItem(
-  userId: string,
-  monthYear: string,
-  type: 'rendas' | 'despesas' | 'economias',
-  itemId: number,
-  currentData: MonthlyFinancialData
-): Promise<MonthlyFinancialData> {
-  // 1. Optimistically update local data
-  const updatedData: MonthlyFinancialData = {
-    ...currentData,
-    [type]: currentData[type].filter((item) => item.id !== itemId),
-  };
-
-  try {
-    localStorage.setItem(`fin_local_${userId}_${monthYear}`, JSON.stringify(updatedData));
-  } catch {}
-
-  // 2. Send delete request to backend & Supabase
-  try {
-    const res = await cloudFetch<{ data: MonthlyFinancialData }>(
-      `/api/financial/${monthYear}/item/${type}/${itemId}`,
-      {
-        method: 'DELETE',
-      }
-    );
-
-    if (res && res.data) {
-      return res.data;
-    }
-  } catch (err) {
-    console.warn('Could not delete from cloud server immediately:', err);
-  }
-
-  return updatedData;
-}
-
-// Check Supabase Cloud status and get table creation script
+/**
+ * Check Supabase Cloud status and get table creation script
+ */
 export async function fetchSupabaseCloudStatus(): Promise<{
   connected: boolean;
   tablesExist: boolean;
@@ -156,8 +221,17 @@ export async function fetchSupabaseCloudStatus(): Promise<{
   }
 }
 
-// Migrate any legacy or local records found in localStorage to the Cloud/Supabase
+/**
+ * Safe local data migration
+ * Only runs if the user has legacy unmigrated local items.
+ * Never overwrites existing cloud data.
+ */
 export async function migrateLocalDataToCloud(userId: string): Promise<number> {
+  const migrationFlag = `fin_migrated_v3_${userId}`;
+  if (localStorage.getItem(migrationFlag)) {
+    return 0;
+  }
+
   let count = 0;
   try {
     const localMonths: Record<string, MonthlyFinancialData> = {};
@@ -193,6 +267,8 @@ export async function migrateLocalDataToCloud(userId: string): Promise<number> {
         body: JSON.stringify({ data: localMonths }),
       });
     }
+
+    localStorage.setItem(migrationFlag, 'true');
   } catch (err) {
     console.warn('Error during local to cloud migration:', err);
   }

@@ -123,29 +123,14 @@ export async function checkSupabaseStatus(): Promise<{
 
 /**
  * Fetch monthly financial data for authenticated user from Supabase
+ * Prioritizes the granular financial_records table (primary source of truth)
  */
 export async function getMonthlyDataFromSupabase(
   userId: string,
   monthYear: string
 ): Promise<MonthlyFinancialData | null> {
   try {
-    // 1. Try to read from monthly_data
-    const { data, error } = await supabase
-      .from('monthly_data')
-      .select('rendas, despesas, economias')
-      .eq('user_id', userId)
-      .eq('month_year', monthYear)
-      .maybeSingle();
-
-    if (!error && data) {
-      return {
-        rendas: Array.isArray(data.rendas) ? data.rendas : [],
-        despesas: Array.isArray(data.despesas) ? data.despesas : [],
-        economias: Array.isArray(data.economias) ? data.economias : [],
-      };
-    }
-
-    // 2. Try to read from financial_records if monthly_data was empty
+    // 1. First priority: Read granular financial_records
     const { data: records, error: recError } = await supabase
       .from('financial_records')
       .select('*')
@@ -182,10 +167,156 @@ export async function getMonthlyDataFromSupabase(
       return result;
     }
 
+    // 2. Secondary fallback: Check monthly_data snapshot table
+    const { data, error } = await supabase
+      .from('monthly_data')
+      .select('rendas, despesas, economias')
+      .eq('user_id', userId)
+      .eq('month_year', monthYear)
+      .maybeSingle();
+
+    if (!error && data && (data.rendas?.length || data.despesas?.length || data.economias?.length)) {
+      return {
+        rendas: Array.isArray(data.rendas) ? data.rendas : [],
+        despesas: Array.isArray(data.despesas) ? data.despesas : [],
+        economias: Array.isArray(data.economias) ? data.economias : [],
+      };
+    }
+
     return null;
   } catch (err) {
     console.warn('Supabase getMonthlyData error:', err);
     return null;
+  }
+}
+
+/**
+ * Insert a single verified financial record in Supabase
+ */
+export async function insertFinancialRecordInSupabase(
+  userId: string,
+  monthYear: string,
+  type: 'rendas' | 'despesas' | 'economias',
+  item: { id?: number; nome: string; valor: number; status?: 'Pago' | 'Pendente' }
+): Promise<{ success: boolean; item?: FinancialItem; error?: string }> {
+  try {
+    const numId = typeof item.id === 'number' ? item.id : Date.now();
+    const prefix = type === 'despesas' ? 'desp' : type === 'rendas' ? 'rend' : 'econ';
+    const recordId = `${userId}_${monthYear}_${prefix}_${numId}`;
+    const now = new Date().toISOString();
+
+    const recordPayload = {
+      id: recordId,
+      user_id: userId,
+      month_year: monthYear,
+      type,
+      nome: item.nome.trim(),
+      valor: item.valor,
+      status: type === 'despesas' ? (item.status === 'Pago' ? 'Pago' : 'Pendente') : null,
+      created_at: now,
+      updated_at: now,
+    };
+
+    const { data, error } = await supabase
+      .from('financial_records')
+      .upsert(recordPayload, { onConflict: 'id' })
+      .select('*')
+      .single();
+
+    if (error) {
+      console.error('Supabase INSERT failed in financial_records:', error);
+      return { success: false, error: error.message || 'Erro ao salvar no banco de dados.' };
+    }
+
+    const createdItem: FinancialItem = {
+      id: numId,
+      nome: data.nome,
+      valor: Number(data.valor),
+      status: data.status || undefined,
+    };
+
+    return { success: true, item: createdItem };
+  } catch (err: any) {
+    console.error('Supabase insert exception:', err);
+    return { success: false, error: err.message || 'Falha de comunicação com o Supabase.' };
+  }
+}
+
+/**
+ * Update an existing financial record in Supabase
+ */
+export async function updateFinancialRecordInSupabase(
+  userId: string,
+  monthYear: string,
+  type: 'rendas' | 'despesas' | 'economias',
+  item: { id: number; nome: string; valor: number; status?: 'Pago' | 'Pendente' }
+): Promise<{ success: boolean; item?: FinancialItem; error?: string }> {
+  try {
+    const prefix = type === 'despesas' ? 'desp' : type === 'rendas' ? 'rend' : 'econ';
+    const recordId = `${userId}_${monthYear}_${prefix}_${item.id}`;
+    const now = new Date().toISOString();
+
+    const { data, error } = await supabase
+      .from('financial_records')
+      .update({
+        nome: item.nome.trim(),
+        valor: item.valor,
+        status: type === 'despesas' ? (item.status === 'Pago' ? 'Pago' : 'Pendente') : null,
+        updated_at: now,
+      })
+      .eq('id', recordId)
+      .eq('user_id', userId)
+      .select('*')
+      .single();
+
+    if (error) {
+      console.error('Supabase UPDATE failed in financial_records:', error);
+      return { success: false, error: error.message || 'Erro ao atualizar no banco de dados.' };
+    }
+
+    return {
+      success: true,
+      item: {
+        id: item.id,
+        nome: data.nome,
+        valor: Number(data.valor),
+        status: data.status || undefined,
+      },
+    };
+  } catch (err: any) {
+    console.error('Supabase update exception:', err);
+    return { success: false, error: err.message || 'Falha de comunicação com o Supabase.' };
+  }
+}
+
+/**
+ * Delete a specific item from Supabase
+ */
+export async function deleteItemFromSupabase(
+  userId: string,
+  monthYear: string,
+  type: 'rendas' | 'despesas' | 'economias',
+  itemId: number
+): Promise<boolean> {
+  try {
+    const prefix = type === 'despesas' ? 'desp' : type === 'rendas' ? 'rend' : 'econ';
+    const recordId = `${userId}_${monthYear}_${prefix}_${itemId}`;
+
+    const { error } = await supabase
+      .from('financial_records')
+      .delete()
+      .eq('id', recordId)
+      .eq('user_id', userId);
+
+    if (error) {
+      console.warn('Supabase delete item error:', error);
+      return false;
+    }
+
+    return true;
+  } catch (err) {
+    console.warn('Supabase delete item error:', err);
+    return false;
   }
 }
 
@@ -280,35 +411,35 @@ export async function saveMonthlyDataToSupabase(
       }
     }
 
+    // 3. Remove any orphan records in financial_records that are no longer in allItems
+    try {
+      const { data: currentDbRecords } = await supabase
+        .from('financial_records')
+        .select('id')
+        .eq('user_id', userId)
+        .eq('month_year', monthYear);
+
+      if (currentDbRecords && currentDbRecords.length > 0) {
+        const activeIds = new Set(allItems.map(i => i.id));
+        const idsToDelete = currentDbRecords
+          .map(r => r.id)
+          .filter(id => !activeIds.has(id));
+
+        if (idsToDelete.length > 0) {
+          await supabase
+            .from('financial_records')
+            .delete()
+            .in('id', idsToDelete)
+            .eq('user_id', userId);
+        }
+      }
+    } catch (cleanupErr) {
+      console.warn('Error cleaning up removed records in Supabase:', cleanupErr);
+    }
+
     return !upsertErr;
   } catch (err) {
     console.warn('Supabase save error:', err);
-    return false;
-  }
-}
-
-/**
- * Delete a specific item from Supabase
- */
-export async function deleteItemFromSupabase(
-  userId: string,
-  monthYear: string,
-  type: 'rendas' | 'despesas' | 'economias',
-  itemId: number
-): Promise<boolean> {
-  try {
-    const prefix = type === 'despesas' ? 'desp' : type === 'rendas' ? 'rend' : 'econ';
-    const recordId = `${userId}_${monthYear}_${prefix}_${itemId}`;
-
-    await supabase
-      .from('financial_records')
-      .delete()
-      .eq('id', recordId)
-      .eq('user_id', userId);
-
-    return true;
-  } catch (err) {
-    console.warn('Supabase delete item error:', err);
     return false;
   }
 }

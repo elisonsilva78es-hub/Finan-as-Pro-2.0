@@ -8,7 +8,7 @@
       "passwordHash": "Mud/XYelUh9vVgFHl8DO60nZRfRZSiBoN65vnwpcCI4=",
       "accountSalt": "7pavnsMbaDLAeCrZ1T3CSw==",
       "recoveryPin": "153414",
-      "updatedAt": "2026-09-24T17:14:21.090Z"
+      "updatedAt": "2026-09-25T12:59:20.093Z"
     },
     "usr_d8375f14cf7af854": {
       "userId": "usr_d8375f14cf7af854",
@@ -177,6 +177,15 @@
       "provider": "email",
       "expiresAt": 1790945602633,
       "createdAt": "2026-09-25T12:53:22.633Z"
+    },
+    "215391e0da7f68371adca81b9aaa0c0b229566e7dfdbef62181fd9a99b1bd210": {
+      "token": "215391e0da7f68371adca81b9aaa0c0b229566e7dfdbef62181fd9a99b1bd210",
+      "userId": "usr_g_3c194fd4dec0e0af",
+      "email": "elison.silva78.es@gmail.com",
+      "displayName": "elison.silva78.es",
+      "provider": "google",
+      "expiresAt": 1790945960094,
+      "createdAt": "2026-09-25T12:59:20.094Z"
     }
   },
   "financialData": {
@@ -231,6 +240,32 @@
         ],
         "despesas": [],
         "economias": []
+      }
+    },
+    "usr_g_3c194fd4dec0e0af": {
+      "09_2026": {
+        "rendas": [
+          {
+            "id": 111,
+            "nome": "Salário Teste",
+            "valor": 5500
+          }
+        ],
+        "despesas": [
+          {
+            "id": 222,
+            "nome": "Conta de Luz",
+            "valor": 250,
+            "status": "Pendente"
+          }
+        ],
+        "economias": [
+          {
+            "id": 333,
+            "nome": "Reserva",
+            "valor": 1000
+          }
+        ]
       }
     }
   }

@@ -7,6 +7,8 @@ import {
   getMonthlyDataFromSupabase,
   saveMonthlyDataToSupabase,
   deleteItemFromSupabase,
+  insertFinancialRecordInSupabase,
+  updateFinancialRecordInSupabase,
   checkSupabaseStatus,
   SQL_SETUP_SCRIPT
 } from './src/server/supabaseService';
@@ -810,10 +812,11 @@ async function startServer() {
   const realtimeClients: Map<string, Set<express.Response>> = new Map();
 
   function broadcastFinancialChange(userId: string, event: {
-    action: 'UPSERT_MONTHLY' | 'DELETE_ITEM';
+    action: 'UPSERT_MONTHLY' | 'DELETE_ITEM' | 'INSERT_ITEM' | 'UPDATE_ITEM';
     monthYear: string;
     type?: 'rendas' | 'despesas' | 'economias';
     itemId?: number;
+    item?: any;
     data?: any;
     timestamp: string;
   }) {
@@ -980,6 +983,149 @@ async function startServer() {
     }
   });
 
+  // 16b. ADD SINGLE FINANCIAL ITEM DIRECTLY TO SUPABASE
+  app.post('/api/financial/:monthYear/item', requireAuth, async (req, res) => {
+    try {
+      const session = (req as any).session;
+      const userId = session.userId;
+      const { monthYear } = req.params;
+      const { type, item } = req.body || {};
+
+      if (!['rendas', 'despesas', 'economias'].includes(type)) {
+        return sendError(res, 400, 'Tipo de item inválido.', 'INVALID_TYPE');
+      }
+      if (!item || !item.nome || typeof item.nome !== 'string' || item.nome.trim() === '') {
+        return sendError(res, 400, 'Nome/descrição do item é obrigatório.', 'INVALID_NAME');
+      }
+      const valor = typeof item.valor === 'number' ? item.valor : parseFloat(String(item.valor).replace(',', '.'));
+      if (isNaN(valor) || valor <= 0) {
+        return sendError(res, 400, 'Valor numérico válido é obrigatório.', 'INVALID_VALUE');
+      }
+
+      // 1. Perform verified INSERT directly in Supabase financial_records
+      const insertResult = await insertFinancialRecordInSupabase(userId, monthYear, type, {
+        id: typeof item.id === 'number' ? item.id : Date.now(),
+        nome: item.nome.trim(),
+        valor,
+        status: item.status === 'Pago' ? 'Pago' : (item.status ? 'Pendente' : undefined),
+      });
+
+      if (!insertResult.success || !insertResult.item) {
+        return sendError(res, 500, insertResult.error || 'Erro ao gravar item no banco Supabase.', 'INSERT_FAILED');
+      }
+
+      const confirmedItem = insertResult.item;
+
+      // 2. Keep server database cache in sync
+      if (!dbCache.financialData) dbCache.financialData = {};
+      if (!dbCache.financialData[userId]) dbCache.financialData[userId] = {};
+      if (!dbCache.financialData[userId][monthYear]) {
+        const fromSb = await getMonthlyDataFromSupabase(userId, monthYear);
+        dbCache.financialData[userId][monthYear] = fromSb || { rendas: [], despesas: [], economias: [] };
+      }
+      const currentMonth = dbCache.financialData[userId][monthYear];
+      if (!currentMonth[type]) currentMonth[type] = [];
+      // Deduplicate if already present
+      currentMonth[type] = [confirmedItem, ...currentMonth[type].filter((i: any) => i.id !== confirmedItem.id)];
+      saveDatabase();
+
+      // 3. Keep monthly_data snapshot in sync
+      await saveMonthlyDataToSupabase(userId, monthYear, currentMonth);
+
+      // 4. Broadcast Realtime change to all other devices
+      broadcastFinancialChange(userId, {
+        action: 'INSERT_ITEM',
+        monthYear,
+        type,
+        itemId: confirmedItem.id,
+        item: confirmedItem,
+        data: currentMonth,
+        timestamp: new Date().toISOString(),
+      });
+
+      return sendSuccess(res, {
+        confirmed: true,
+        item: confirmedItem,
+        data: currentMonth,
+        monthYear,
+      }, 'Item salvo e confirmado no Supabase com sucesso.');
+    } catch (err: any) {
+      console.error('Error in POST /api/financial/:monthYear/item:', err);
+      return sendError(res, 500, 'Falha ao processar inserção no Supabase.', 'INSERT_ERROR');
+    }
+  });
+
+  // 16c. UPDATE SINGLE FINANCIAL ITEM DIRECTLY IN SUPABASE
+  app.put('/api/financial/:monthYear/item/:type/:id', requireAuth, async (req, res) => {
+    try {
+      const session = (req as any).session;
+      const userId = session.userId;
+      const { monthYear, type, id } = req.params;
+      const { item } = req.body || {};
+
+      if (!['rendas', 'despesas', 'economias'].includes(type)) {
+        return sendError(res, 400, 'Tipo de item inválido.', 'INVALID_TYPE');
+      }
+      const numId = parseInt(id, 10);
+      if (isNaN(numId)) {
+        return sendError(res, 400, 'ID de item inválido.', 'INVALID_ID');
+      }
+
+      const valor = typeof item?.valor === 'number' ? item.valor : parseFloat(String(item?.valor || '').replace(',', '.'));
+
+      const updateResult = await updateFinancialRecordInSupabase(userId, monthYear, type as any, {
+        id: numId,
+        nome: String(item?.nome || '').trim(),
+        valor: isNaN(valor) ? 0 : valor,
+        status: item?.status === 'Pago' ? 'Pago' : (item?.status ? 'Pendente' : undefined),
+      });
+
+      if (!updateResult.success || !updateResult.item) {
+        return sendError(res, 500, updateResult.error || 'Erro ao atualizar item no Supabase.', 'UPDATE_FAILED');
+      }
+
+      const updatedItem = updateResult.item;
+
+      // Update cache
+      if (!dbCache.financialData) dbCache.financialData = {};
+      if (!dbCache.financialData[userId]) dbCache.financialData[userId] = {};
+      if (!dbCache.financialData[userId][monthYear]) {
+        const fromSb = await getMonthlyDataFromSupabase(userId, monthYear);
+        dbCache.financialData[userId][monthYear] = fromSb || { rendas: [], despesas: [], economias: [] };
+      }
+      const current = dbCache.financialData[userId][monthYear];
+      if (!current[type]) current[type] = [];
+      const idx = current[type].findIndex((i: any) => i.id === numId);
+      if (idx !== -1) {
+        current[type][idx] = updatedItem;
+      } else {
+        current[type].push(updatedItem);
+      }
+      const updatedData = current;
+      saveDatabase();
+      await saveMonthlyDataToSupabase(userId, monthYear, current);
+
+      broadcastFinancialChange(userId, {
+        action: 'UPDATE_ITEM',
+        monthYear,
+        type: type as any,
+        itemId: numId,
+        item: updatedItem,
+        data: updatedData,
+        timestamp: new Date().toISOString(),
+      });
+
+      return sendSuccess(res, {
+        confirmed: true,
+        item: updatedItem,
+        data: updatedData,
+      }, 'Item atualizado com sucesso no Supabase.');
+    } catch (err: any) {
+      console.error('Error in PUT /api/financial/:monthYear/item:', err);
+      return sendError(res, 500, 'Erro ao atualizar item financeiro.', 'UPDATE_ERROR');
+    }
+  });
+
   // 17. DELETE ITEM FROM FINANCIAL DATA
   app.delete('/api/financial/:monthYear/item/:type/:id', requireAuth, async (req, res) => {
     try {
@@ -996,14 +1142,18 @@ async function startServer() {
         return sendError(res, 400, 'ID de item inválido.', 'INVALID_ID');
       }
 
-      // 1. Remove from server cache
-      let updatedData = { rendas: [], despesas: [], economias: [] };
-      if (dbCache.financialData?.[userId]?.[monthYear]) {
-        const current = dbCache.financialData[userId][monthYear];
-        current[type] = (current[type] || []).filter((item: any) => item.id !== numId);
-        updatedData = current;
-        saveDatabase();
+      // 1. Ensure cache is loaded
+      if (!dbCache.financialData) dbCache.financialData = {};
+      if (!dbCache.financialData[userId]) dbCache.financialData[userId] = {};
+      if (!dbCache.financialData[userId][monthYear]) {
+        const fromSb = await getMonthlyDataFromSupabase(userId, monthYear);
+        dbCache.financialData[userId][monthYear] = fromSb || { rendas: [], despesas: [], economias: [] };
       }
+
+      const current = dbCache.financialData[userId][monthYear];
+      current[type] = (current[type] || []).filter((item: any) => item.id !== numId);
+      const updatedData = current;
+      saveDatabase();
 
       // 2. Remove from Supabase
       try {
@@ -1055,17 +1205,19 @@ async function startServer() {
 
       let migratedMonths = 0;
 
-      // Merge server cache with client-provided local data
-      const allMonths: Record<string, any> = {
-        ...(dbCache.financialData?.[userId] || {}),
-        ...clientData,
-      };
+      if (!dbCache.financialData) dbCache.financialData = {};
+      if (!dbCache.financialData[userId]) dbCache.financialData[userId] = {};
 
-      for (const [mYear, mData] of Object.entries(allMonths)) {
+      for (const [mYear, mData] of Object.entries(clientData)) {
         if (mData && typeof mData === 'object') {
-          await saveMonthlyDataToSupabase(userId, mYear, mData);
-          if (!dbCache.financialData) dbCache.financialData = {};
-          if (!dbCache.financialData[userId]) dbCache.financialData[userId] = {};
+          // If server already has rich data for this month, keep server as authoritative
+          const existing = dbCache.financialData[userId][mYear];
+          const hasExisting = existing && (existing.rendas?.length || existing.despesas?.length || existing.economias?.length);
+          if (hasExisting) {
+            continue;
+          }
+
+          await saveMonthlyDataToSupabase(userId, mYear, mData as any);
           dbCache.financialData[userId][mYear] = mData;
           migratedMonths++;
         }

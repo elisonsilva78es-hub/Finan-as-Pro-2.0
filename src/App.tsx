@@ -43,7 +43,9 @@ import {
 import { 
   loadMonthlyFinancialData,
   saveMonthlyFinancialData,
-  deleteMonthlyFinancialItem,
+  createFinancialItem,
+  updateFinancialItem,
+  deleteFinancialItem,
   migrateLocalDataToCloud
 } from './lib/financialService';
 import {
@@ -370,41 +372,69 @@ export default function App() {
     }
   };
 
-  // Add or update item
-  const handleAddItem = (type: 'rendas' | 'despesas' | 'economias') => {
-    const valor = parseFloat(inputValor.replace(',', '.'));
-    if (!inputNome.trim() || isNaN(valor) || valor <= 0) {
-      showToast('Por favor, informe uma descrição e um valor válido.');
+  // Add or update item strictly after Supabase confirms persistence
+  const handleAddItem = async (type: 'rendas' | 'despesas' | 'economias') => {
+    if (!currentUser) {
+      showToast('Por favor, faça login para salvar seus dados financeiros na nuvem.');
       return;
     }
 
-    const nextData = { ...dados };
-
-    if (editingId !== null) {
-      const idx = nextData[type].findIndex(i => i.id === editingId);
-      if (idx !== -1) {
-        nextData[type][idx] = {
-          ...nextData[type][idx],
-          nome: inputNome.trim(),
-          valor
-        };
-      }
-      setEditingId(null);
-      showToast('Item atualizado com sucesso!');
-    } else {
-      const newItem: FinancialItem = {
-        id: Date.now(),
-        nome: inputNome.trim(),
-        valor,
-        status: type === 'despesas' ? 'Pendente' : undefined
-      };
-      nextData[type] = [newItem, ...nextData[type]];
-      showToast('Item adicionado e protegido na nuvem!');
+    const valor = parseFloat(inputValor.replace(',', '.'));
+    if (!inputNome.trim() || isNaN(valor) || valor <= 0) {
+      showToast('Por favor, informe uma descrição e um valor numérico válido.');
+      return;
     }
 
-    setInputNome('');
-    setInputValor('');
-    persistData(nextData);
+    setIsSyncing(true);
+
+    try {
+      if (editingId !== null) {
+        // Updating existing item in Supabase
+        const targetItem = dados[type].find(i => i.id === editingId);
+        const result = await updateFinancialItem(periodKey, type, {
+          id: editingId,
+          nome: inputNome.trim(),
+          valor,
+          status: targetItem?.status,
+        });
+
+        setDados(result.data);
+        setEditingId(null);
+        setInputNome('');
+        setInputValor('');
+        setLastSyncedAt(new Date().toLocaleTimeString('pt-BR', { hour: '2-digit', minute: '2-digit' }));
+        showToast('✅ Registro atualizado e confirmado no Supabase!');
+      } else {
+        // Creating new item in Supabase
+        const result = await createFinancialItem(periodKey, type, {
+          nome: inputNome.trim(),
+          valor,
+          status: type === 'despesas' ? 'Pendente' : undefined,
+        });
+
+        // ONLY after Supabase confirms the INSERT:
+        setDados(result.data);
+        setInputNome('');
+        setInputValor('');
+        setLastSyncedAt(new Date().toLocaleTimeString('pt-BR', { hour: '2-digit', minute: '2-digit' }));
+        showToast('✅ Registro salvo e confirmado no Supabase!');
+
+        if (type === 'despesas') {
+          confetti({ particleCount: 35, spread: 45, origin: { y: 0.8 } });
+        }
+      }
+
+      // If user has optional E2EE cryptoKey unlocked, also keep E2EE vault in sync
+      if (cryptoKey) {
+        saveEncryptedMonthlyData(currentUser.uid, cryptoKey, periodKey, dados).catch(console.warn);
+      }
+    } catch (err: any) {
+      console.error('Error persisting to Supabase:', err);
+      showToast(`❌ ${err.message || 'Erro ao gravar no Supabase. Tente novamente.'}`);
+      // Form inputs remain filled so the user can easily re-submit without losing their data!
+    } finally {
+      setIsSyncing(false);
+    }
   };
 
   const startEdit = (item: FinancialItem) => {
@@ -433,35 +463,47 @@ export default function App() {
 
     setIsSyncing(true);
     try {
-      const updated = await deleteMonthlyFinancialItem(currentUser.uid, periodKey, type, id, dados);
-      setDados(updated);
+      const result = await deleteFinancialItem(periodKey, type, id);
+      setDados(result.data);
       setLastSyncedAt(new Date().toLocaleTimeString('pt-BR', { hour: '2-digit', minute: '2-digit' }));
-      showToast('Item excluído da nuvem com sucesso.');
+      showToast('Item excluído com sucesso do Supabase.');
 
       if (cryptoKey) {
-        saveEncryptedMonthlyData(currentUser.uid, cryptoKey, periodKey, updated).catch(console.warn);
+        saveEncryptedMonthlyData(currentUser.uid, cryptoKey, periodKey, result.data).catch(console.warn);
       }
-    } catch (err) {
+    } catch (err: any) {
       console.error('Failed to delete item from cloud:', err);
-      const fallback = {
-        ...dados,
-        [type]: dados[type].filter(i => i.id !== id)
-      };
-      setDados(fallback);
+      showToast(`❌ Falha ao excluir do Supabase: ${err.message || 'Erro de rede.'}`);
     } finally {
       setIsSyncing(false);
     }
   };
 
-  const toggleStatus = (id: number) => {
-    const nextDespesas = dados.despesas.map(d => {
-      if (d.id === id) {
-        const nextStatus = d.status === 'Pago' ? 'Pendente' : 'Pago';
-        return { ...d, status: nextStatus as 'Pendente' | 'Pago' };
-      }
-      return d;
-    });
-    persistData({ ...dados, despesas: nextDespesas });
+  const toggleStatus = async (id: number) => {
+    if (!currentUser) return;
+    const target = dados.despesas.find(d => d.id === id);
+    if (!target) return;
+
+    const nextStatus = target.status === 'Pago' ? 'Pendente' : 'Pago';
+    setIsSyncing(true);
+
+    try {
+      const result = await updateFinancialItem(periodKey, 'despesas', {
+        id,
+        nome: target.nome,
+        valor: target.valor,
+        status: nextStatus,
+      });
+
+      setDados(result.data);
+      setLastSyncedAt(new Date().toLocaleTimeString('pt-BR', { hour: '2-digit', minute: '2-digit' }));
+      showToast(nextStatus === 'Pago' ? '✅ Marcado como Pago!' : 'Marcado como Pendente.');
+    } catch (err: any) {
+      console.error('Error toggling status in Supabase:', err);
+      showToast(`❌ Falha ao atualizar status no Supabase: ${err.message || 'Erro.'}`);
+    } finally {
+      setIsSyncing(false);
+    }
   };
 
   // Drag and drop for despesas
