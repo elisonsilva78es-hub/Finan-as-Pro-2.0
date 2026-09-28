@@ -279,30 +279,57 @@ async function startServer() {
     return req.socket.remoteAddress || '127.0.0.1';
   };
 
-  // Helper to normalize period to MM_YYYY format
+  // Helper to normalize period to MM_YYYY format (supports MM_YYYY, YYYY-MM, YYYY_MM, MM/YYYY, M_YYYY)
   const normalizePeriod = (period: string): string => {
     if (!period) return '';
-    const clean = period.trim().replace(/[/\\-]/g, '_');
+    const clean = String(period).trim().replace(/[/\\-]/g, '_');
     const parts = clean.split('_');
     if (parts.length >= 2) {
-      const month = parts[0].padStart(2, '0');
-      const year = parts[1];
-      if (/^\d{2}$/.test(month) && /^\d{4}$/.test(year)) {
-        return `${month}_${year}`;
+      // YYYY_MM or YYYY_M
+      if (/^\d{4}$/.test(parts[0]) && /^\d{1,2}$/.test(parts[1])) {
+        return `${parts[1].padStart(2, '0')}_${parts[0]}`;
+      }
+      // MM_YYYY or M_YYYY
+      if (/^\d{1,2}$/.test(parts[0]) && /^\d{4}$/.test(parts[1])) {
+        return `${parts[0].padStart(2, '0')}_${parts[1]}`;
       }
     }
     return clean;
   };
 
-  // Helper to extract normalized period from req.params
-  const extractPeriod = (params: Record<string, any>): string => {
-    if (params.monthYear) {
-      return normalizePeriod(String(params.monthYear));
+  // Helper to extract normalized period from req (params, query, body)
+  const extractPeriod = (req: express.Request | Record<string, any>): string => {
+    const params = (req as any).params || req;
+    const query = (req as any).query || {};
+    const body = (req as any).body || {};
+
+    const raw =
+      params.monthYear ||
+      params.periodo ||
+      params.period ||
+      query.periodo ||
+      query.period ||
+      query.monthYear ||
+      body.monthYear ||
+      body.periodo ||
+      body.period;
+
+    if (raw) {
+      const norm = normalizePeriod(String(raw));
+      if (/^\d{2}_\d{4}$/.test(norm)) return norm;
     }
-    if (params.month && params.year) {
-      return `${String(params.month).padStart(2, '0')}_${params.year}`;
+
+    const m = params.month || query.mes || query.month || body.mes || body.month;
+    const y = params.year || query.ano || query.year || body.ano || body.year;
+
+    if (m && y) {
+      const norm = normalizePeriod(`${m}_${y}`);
+      if (/^\d{2}_\d{4}$/.test(norm)) return norm;
     }
-    return '';
+
+    // Default to current month/year
+    const now = new Date();
+    return `${String(now.getMonth() + 1).padStart(2, '0')}_${now.getFullYear()}`;
   };
 
   // Middleware to authenticate requests via Bearer Token or Query Token (for EventSource SSE)
@@ -962,16 +989,24 @@ async function startServer() {
   // Strictly validated and isolated by session.userId
   // ==========================================
 
-  // 15. ADD SINGLE FINANCIAL ITEM DIRECTLY (With resilient server persistence & Supabase sync)
-  app.post(['/api/financial/:monthYear/item', '/api/financial/:month(\\d{1,2})/:year(\\d{4})/item'], requireAuth, async (req, res) => {
+  // 15. ADD SINGLE FINANCIAL ITEM DIRECTLY (Supports path param, body param, query param, and aliases)
+  app.post([
+    '/api/financial/:monthYear/item',
+    '/api/financial/:month(\\d{1,2})/:year(\\d{4})/item',
+    '/api/financial/item',
+    '/api/financeiro/:monthYear/item',
+    '/api/financeiro/item',
+    '/api/finances/:monthYear/item',
+    '/api/finances/item'
+  ], requireAuth, async (req, res) => {
     try {
       const session = (req as any).session;
       const userId = session.userId;
-      const monthYear = extractPeriod(req.params);
+      const monthYear = extractPeriod(req);
       const { type, item } = req.body || {};
 
       if (!['rendas', 'despesas', 'economias'].includes(type)) {
-        return sendError(res, 400, 'Tipo de item inválido.', 'INVALID_TYPE');
+        return sendError(res, 400, 'Tipo de item inválido. Escolha rendas, despesas ou economias.', 'INVALID_TYPE');
       }
 
       // Robust item name handling: for economias/rendas, provide intuitive defaults if empty
@@ -1062,11 +1097,17 @@ async function startServer() {
   });
 
   // 16. UPDATE SINGLE FINANCIAL ITEM
-  app.put(['/api/financial/:monthYear/item/:type/:id', '/api/financial/:month(\\d{1,2})/:year(\\d{4})/item/:type/:id'], requireAuth, async (req, res) => {
+  app.put([
+    '/api/financial/:monthYear/item/:type/:id',
+    '/api/financial/:month(\\d{1,2})/:year(\\d{4})/item/:type/:id',
+    '/api/financial/item/:type/:id',
+    '/api/financeiro/:monthYear/item/:type/:id',
+    '/api/financeiro/item/:type/:id'
+  ], requireAuth, async (req, res) => {
     try {
       const session = (req as any).session;
       const userId = session.userId;
-      const monthYear = extractPeriod(req.params);
+      const monthYear = extractPeriod(req);
       const { type, id } = req.params;
       const { item } = req.body || {};
 
@@ -1144,11 +1185,17 @@ async function startServer() {
   });
 
   // 17. DELETE ITEM FROM FINANCIAL DATA
-  app.delete(['/api/financial/:monthYear/item/:type/:id', '/api/financial/:month(\\d{1,2})/:year(\\d{4})/item/:type/:id'], requireAuth, async (req, res) => {
+  app.delete([
+    '/api/financial/:monthYear/item/:type/:id',
+    '/api/financial/:month(\\d{1,2})/:year(\\d{4})/item/:type/:id',
+    '/api/financial/item/:type/:id',
+    '/api/financeiro/:monthYear/item/:type/:id',
+    '/api/financeiro/item/:type/:id'
+  ], requireAuth, async (req, res) => {
     try {
       const session = (req as any).session;
       const userId = session.userId;
-      const monthYear = extractPeriod(req.params);
+      const monthYear = extractPeriod(req);
       const { type, id } = req.params;
 
       if (!['rendas', 'despesas', 'economias'].includes(type)) {
@@ -1202,16 +1249,20 @@ async function startServer() {
     }
   });
 
-  // 18. GET MONTHLY FINANCIAL DATA (From Supabase with local fallback)
-  app.get(['/api/financial/:monthYear', '/api/financial/:month(\\d{1,2})/:year(\\d{4})'], requireAuth, async (req, res) => {
+  // 18. GET MONTHLY FINANCIAL DATA (Supports path, query params, body, and aliases)
+  app.get([
+    '/api/financial/:monthYear',
+    '/api/financial/:month(\\d{1,2})/:year(\\d{4})',
+    '/api/financial',
+    '/api/financeiro/:monthYear',
+    '/api/financeiro',
+    '/api/finances/:monthYear',
+    '/api/finances'
+  ], requireAuth, async (req, res) => {
     try {
       const session = (req as any).session;
       const userId = session.userId;
-      const monthYear = extractPeriod(req.params);
-
-      if (!monthYear || !/^\d{2}_\d{4}$/.test(monthYear)) {
-        return sendError(res, 400, 'Formato de mês/ano inválido. Use MM_AAAA (ex: 09_2026).', 'INVALID_PERIOD');
-      }
+      const monthYear = extractPeriod(req);
 
       // 1. Try to load fresh data from Supabase first
       let data = await getMonthlyDataFromSupabase(userId, monthYear);
@@ -1243,16 +1294,20 @@ async function startServer() {
     }
   });
 
-  // 19. SAVE / SYNC MONTHLY FINANCIAL DATA (To Supabase & persistent server storage)
-  app.post(['/api/financial/:monthYear', '/api/financial/:month(\\d{1,2})/:year(\\d{4})'], requireAuth, async (req, res) => {
+  // 19. SAVE / SYNC MONTHLY FINANCIAL DATA (Supports path, query params, body, and aliases)
+  app.post([
+    '/api/financial/:monthYear',
+    '/api/financial/:month(\\d{1,2})/:year(\\d{4})',
+    '/api/financial',
+    '/api/financeiro/:monthYear',
+    '/api/financeiro',
+    '/api/finances/:monthYear',
+    '/api/finances'
+  ], requireAuth, async (req, res) => {
     try {
       const session = (req as any).session;
       const userId = session.userId;
-      const monthYear = extractPeriod(req.params);
-
-      if (!monthYear || !/^\d{2}_\d{4}$/.test(monthYear)) {
-        return sendError(res, 400, 'Formato de mês/ano inválido. Use MM_AAAA.', 'INVALID_PERIOD');
-      }
+      const monthYear = extractPeriod(req);
 
       const { rendas = [], despesas = [], economias = [] } = req.body || {};
 

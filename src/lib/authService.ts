@@ -99,8 +99,13 @@ export interface ApiResponse<T> {
 async function fetchWithRetry(url: string, init: RequestInit, retries = 2, delayMs = 400): Promise<Response> {
   try {
     const res = await fetch(url, init);
-    // If proxy warmup/502/503 or transient 404 during server restart/warmup, retry once
-    if ((res.status === 502 || res.status === 503) && retries > 0) {
+    // If proxy warmup/502/503 or transient HTML 404 during server restart/warmup, retry once
+    const isTransient =
+      res.status === 502 ||
+      res.status === 503 ||
+      (res.status === 404 && (res.headers.get('content-type') || '').includes('text/html'));
+
+    if (isTransient && retries > 0) {
       await new Promise((r) => setTimeout(r, delayMs));
       return fetchWithRetry(url, init, retries - 1, delayMs * 1.5);
     }

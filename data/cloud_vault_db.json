@@ -8,7 +8,7 @@
       "passwordHash": "Mud/XYelUh9vVgFHl8DO60nZRfRZSiBoN65vnwpcCI4=",
       "accountSalt": "7pavnsMbaDLAeCrZ1T3CSw==",
       "recoveryPin": "153414",
-      "updatedAt": "2026-09-28T20:00:02.148Z"
+      "updatedAt": "2026-09-28T20:46:14.460Z"
     },
     "usr_d8375f14cf7af854": {
       "userId": "usr_d8375f14cf7af854",
@@ -215,6 +215,24 @@
       "provider": "google",
       "expiresAt": 1791230402148,
       "createdAt": "2026-09-28T20:00:02.148Z"
+    },
+    "c8f82d462f351dba9324a6d7b93ca02fdfb3f2fbe915f776338d9f420313e498": {
+      "token": "c8f82d462f351dba9324a6d7b93ca02fdfb3f2fbe915f776338d9f420313e498",
+      "userId": "usr_g_3c194fd4dec0e0af",
+      "email": "elison.silva78.es@gmail.com",
+      "displayName": "elison.silva78.es",
+      "provider": "google",
+      "expiresAt": 1791232988730,
+      "createdAt": "2026-09-28T20:43:08.730Z"
+    },
+    "983803b00c0613db7d436e2b007a41e8e81263ba05d57c06df726202588ef097": {
+      "token": "983803b00c0613db7d436e2b007a41e8e81263ba05d57c06df726202588ef097",
+      "userId": "usr_g_3c194fd4dec0e0af",
+      "email": "elison.silva78.es@gmail.com",
+      "displayName": "elison.silva78.es",
+      "provider": "google",
+      "expiresAt": 1791233174460,
+      "createdAt": "2026-09-28T20:46:14.460Z"
     }
   },
   "financialData": {

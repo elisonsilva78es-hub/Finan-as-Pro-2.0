@@ -19,10 +19,13 @@ export function normalizeMonthYear(period: string): string {
   const clean = period.trim().replace(/[/\\-]/g, '_');
   const parts = clean.split('_');
   if (parts.length >= 2) {
-    const month = parts[0].padStart(2, '0');
-    const year = parts[1];
-    if (/^\d{2}$/.test(month) && /^\d{4}$/.test(year)) {
-      return `${month}_${year}`;
+    // Check if YYYY_MM or YYYY_M (e.g. 2026_09)
+    if (/^\d{4}$/.test(parts[0]) && /^\d{1,2}$/.test(parts[1])) {
+      return `${parts[1].padStart(2, '0')}_${parts[0]}`;
+    }
+    // Check if MM_YYYY or M_YYYY (e.g. 09_2026 or 9_2026)
+    if (/^\d{1,2}$/.test(parts[0]) && /^\d{4}$/.test(parts[1])) {
+      return `${parts[0].padStart(2, '0')}_${parts[1]}`;
     }
   }
   return clean;
@@ -58,6 +61,7 @@ export async function createFinancialItem(
     {
       method: 'POST',
       body: JSON.stringify({
+        monthYear: normPeriod,
         type,
         item: {
           nome: (item.nome || '').trim(),
@@ -98,6 +102,7 @@ export async function updateFinancialItem(
     {
       method: 'PUT',
       body: JSON.stringify({
+        monthYear: normPeriod,
         item: {
           id: item.id,
           nome: (item.nome || '').trim(),
@@ -254,6 +259,7 @@ export async function saveMonthlyFinancialData(
       {
         method: 'POST',
         body: JSON.stringify({
+          monthYear: normPeriod,
           rendas: data.rendas || [],
           despesas: data.despesas || [],
           economias: data.economias || [],
