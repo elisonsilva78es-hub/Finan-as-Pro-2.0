@@ -9,6 +9,7 @@ import {
   type EncryptedPayload
 } from './crypto';
 import { cloudFetch } from './authService';
+import { normalizeMonthYear } from './financialService';
 import type { MonthlyFinancialData, UserSecurityProfile } from '../types/finance';
 
 /**
@@ -205,16 +206,17 @@ export async function saveEncryptedMonthlyData(
   monthYear: string,
   data: MonthlyFinancialData
 ): Promise<void> {
+  const normPeriod = normalizeMonthYear(monthYear);
   // Encrypt with client master key (Zero-Knowledge)
   const payload = await encryptData(key, data);
   
   // 1. Save in user-isolated local secure vault (instant local response)
-  localStorage.setItem(`fin_vault_${userId}_records_${monthYear}`, JSON.stringify(payload));
-  localStorage.setItem(`fin_local_${userId}_${monthYear}`, JSON.stringify(data));
+  localStorage.setItem(`fin_vault_${userId}_records_${normPeriod}`, JSON.stringify(payload));
+  localStorage.setItem(`fin_local_${userId}_${normPeriod}`, JSON.stringify(data));
 
   // 2. Persist encrypted ciphertext to Cloud Server (Cloud sync across all devices)
   try {
-    await cloudFetch(`/api/records/${userId}/${monthYear}`, {
+    await cloudFetch(`/api/records/${userId}/${normPeriod}`, {
       method: 'POST',
       body: JSON.stringify({
         encryptedPayload: payload.ciphertext,
@@ -233,19 +235,31 @@ export async function loadEncryptedMonthlyData(
   key: CryptoKey,
   monthYear: string
 ): Promise<MonthlyFinancialData | null> {
+  const normPeriod = normalizeMonthYear(monthYear);
   // 1. Try to load fresh encrypted payload from Native Cloud Server first
   try {
-    const rec = await cloudFetch<any>(`/api/records/${userId}/${monthYear}`);
-    if (rec && rec.encryptedPayload && rec.iv) {
+    const rec = await cloudFetch<any>(`/api/records/${userId}/${normPeriod}`);
+    if (rec && rec.record && rec.record.encryptedPayload && rec.record.iv) {
+      const payload: EncryptedPayload = {
+        ciphertext: rec.record.encryptedPayload,
+        iv: rec.record.iv,
+      };
+      // Update local cache
+      localStorage.setItem(`fin_vault_${userId}_records_${normPeriod}`, JSON.stringify(payload));
+      const decrypted = await decryptData(key, payload);
+      if (decrypted) {
+        localStorage.setItem(`fin_local_${userId}_${normPeriod}`, JSON.stringify(decrypted));
+        return decrypted as MonthlyFinancialData;
+      }
+    } else if (rec && rec.encryptedPayload && rec.iv) {
       const payload: EncryptedPayload = {
         ciphertext: rec.encryptedPayload,
         iv: rec.iv,
       };
-      // Update local cache
-      localStorage.setItem(`fin_vault_${userId}_records_${monthYear}`, JSON.stringify(payload));
+      localStorage.setItem(`fin_vault_${userId}_records_${normPeriod}`, JSON.stringify(payload));
       const decrypted = await decryptData(key, payload);
       if (decrypted) {
-        localStorage.setItem(`fin_local_${userId}_${monthYear}`, JSON.stringify(decrypted));
+        localStorage.setItem(`fin_local_${userId}_${normPeriod}`, JSON.stringify(decrypted));
         return decrypted as MonthlyFinancialData;
       }
     }
@@ -254,7 +268,7 @@ export async function loadEncryptedMonthlyData(
   }
 
   // 2. Fallback to local encrypted vault in localStorage
-  const raw = localStorage.getItem(`fin_vault_${userId}_records_${monthYear}`);
+  const raw = localStorage.getItem(`fin_vault_${userId}_records_${normPeriod}`);
   if (raw) {
     try {
       const payload = JSON.parse(raw) as EncryptedPayload;
@@ -268,7 +282,7 @@ export async function loadEncryptedMonthlyData(
   }
 
   // 3. Fallback to plain local cache if available
-  const localCache = localStorage.getItem(`fin_local_${userId}_${monthYear}`);
+  const localCache = localStorage.getItem(`fin_local_${userId}_${normPeriod}`);
   if (localCache) {
     try {
       return JSON.parse(localCache) as MonthlyFinancialData;

@@ -40,13 +40,15 @@ import {
   parseImportedFinancialData,
   findLegacyBrowserData 
 } from './lib/dataSync';
+import { extractErrorMessage } from './lib/errorHandler';
 import { 
   loadMonthlyFinancialData,
   saveMonthlyFinancialData,
   createFinancialItem,
   updateFinancialItem,
   deleteFinancialItem,
-  migrateLocalDataToCloud
+  migrateLocalDataToCloud,
+  normalizeMonthYear
 } from './lib/financialService';
 import {
   subscribeToFinancialRealtime,
@@ -277,7 +279,7 @@ export default function App() {
   };
 
   // Fetch monthly records when period changes or window regains focus (cross-device sync)
-  const periodKey = `${selectedMonth}_${selectedYear}`;
+  const periodKey = normalizeMonthYear(`${selectedMonth}_${selectedYear}`);
 
   useEffect(() => {
     if (!currentUser) return;
@@ -506,7 +508,8 @@ export default function App() {
     } catch (err: any) {
       console.error('Error persisting item:', err);
       setDados(previousDados);
-      showToast(`❌ ${err.message || 'Erro ao salvar. Tente novamente.'}`);
+      const cleanMsg = extractErrorMessage(err, 'Erro ao salvar dados financeiros. Verifique sua conexão.');
+      showToast(`❌ ${cleanMsg}`);
     } finally {
       setIsSyncing(false);
     }
@@ -561,7 +564,8 @@ export default function App() {
       console.error('Failed to delete item from cloud:', err);
       // Rollback on failure
       setDados(previousData);
-      showToast(`❌ Falha ao excluir do Supabase: ${err.message || 'Erro de rede.'}`);
+      const cleanMsg = extractErrorMessage(err, 'Falha ao excluir item. Tente novamente.');
+      showToast(`❌ ${cleanMsg}`);
     } finally {
       setIsSyncing(false);
     }
@@ -588,7 +592,8 @@ export default function App() {
       showToast(nextStatus === 'Pago' ? '✅ Marcado como Pago!' : 'Marcado como Pendente.');
     } catch (err: any) {
       console.error('Error toggling status in Supabase:', err);
-      showToast(`❌ Falha ao atualizar status no Supabase: ${err.message || 'Erro.'}`);
+      const cleanMsg = extractErrorMessage(err, 'Falha ao atualizar status.');
+      showToast(`❌ ${cleanMsg}`);
     } finally {
       setIsSyncing(false);
     }

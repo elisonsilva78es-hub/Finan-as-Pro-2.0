@@ -8,6 +8,27 @@ const DEFAULT_FINANCIAL_DATA: MonthlyFinancialData = {
 };
 
 /**
+ * Normalizes period strings to standard MM_YYYY format.
+ * Examples: "9_2026" -> "09_2026", "09/2026" -> "09_2026", "09-2026" -> "09_2026".
+ */
+export function normalizeMonthYear(period: string): string {
+  if (!period || typeof period !== 'string') {
+    const now = new Date();
+    return `${String(now.getMonth() + 1).padStart(2, '0')}_${now.getFullYear()}`;
+  }
+  const clean = period.trim().replace(/[/\\-]/g, '_');
+  const parts = clean.split('_');
+  if (parts.length >= 2) {
+    const month = parts[0].padStart(2, '0');
+    const year = parts[1];
+    if (/^\d{2}$/.test(month) && /^\d{4}$/.test(year)) {
+      return `${month}_${year}`;
+    }
+  }
+  return clean;
+}
+
+/**
  * Service to manage persistent financial data synchronized across all devices
  * with Supabase as the official cloud database and source of truth.
  */
@@ -30,9 +51,10 @@ export async function createFinancialItem(
   type: 'rendas' | 'despesas' | 'economias',
   item: { nome?: string; valor: number; status?: 'Pago' | 'Pendente' }
 ): Promise<ConfirmedItemResponse> {
+  const normPeriod = normalizeMonthYear(monthYear);
   const user = getActiveUser();
   const res = await safeApiCall<ConfirmedItemResponse>(
-    `/api/financial/${monthYear}/item`,
+    `/api/financial/${normPeriod}/item`,
     {
       method: 'POST',
       body: JSON.stringify({
@@ -54,7 +76,7 @@ export async function createFinancialItem(
   // Update local cache with latest data
   if (user && res.data.data) {
     try {
-      localStorage.setItem(`fin_local_${user.uid}_${monthYear}`, JSON.stringify(res.data.data));
+      localStorage.setItem(`fin_local_${user.uid}_${normPeriod}`, JSON.stringify(res.data.data));
     } catch {}
   }
 
@@ -69,9 +91,10 @@ export async function updateFinancialItem(
   type: 'rendas' | 'despesas' | 'economias',
   item: { id: number; nome?: string; valor: number; status?: 'Pago' | 'Pendente' }
 ): Promise<ConfirmedItemResponse> {
+  const normPeriod = normalizeMonthYear(monthYear);
   const user = getActiveUser();
   const res = await safeApiCall<ConfirmedItemResponse>(
-    `/api/financial/${monthYear}/item/${type}/${item.id}`,
+    `/api/financial/${normPeriod}/item/${type}/${item.id}`,
     {
       method: 'PUT',
       body: JSON.stringify({
@@ -92,7 +115,7 @@ export async function updateFinancialItem(
 
   if (user && res.data.data) {
     try {
-      localStorage.setItem(`fin_local_${user.uid}_${monthYear}`, JSON.stringify(res.data.data));
+      localStorage.setItem(`fin_local_${user.uid}_${normPeriod}`, JSON.stringify(res.data.data));
     } catch {}
   }
 
@@ -107,11 +130,12 @@ export async function deleteFinancialItem(
   type: 'rendas' | 'despesas' | 'economias',
   itemId: number
 ): Promise<{ confirmed: boolean; data: MonthlyFinancialData }> {
+  const normPeriod = normalizeMonthYear(monthYear);
   const user = getActiveUser();
 
   // Optimistically remove from local cache immediately
   if (user) {
-    const cacheKey = `fin_local_${user.uid}_${monthYear}`;
+    const cacheKey = `fin_local_${user.uid}_${normPeriod}`;
     try {
       const raw = localStorage.getItem(cacheKey);
       if (raw) {
@@ -127,7 +151,7 @@ export async function deleteFinancialItem(
   }
 
   const res = await safeApiCall<{ data: MonthlyFinancialData }>(
-    `/api/financial/${monthYear}/item/${type}/${itemId}`,
+    `/api/financial/${normPeriod}/item/${type}/${itemId}`,
     {
       method: 'DELETE',
     }
@@ -146,7 +170,7 @@ export async function deleteFinancialItem(
 
   if (user) {
     try {
-      localStorage.setItem(`fin_local_${user.uid}_${monthYear}`, JSON.stringify(confirmedData));
+      localStorage.setItem(`fin_local_${user.uid}_${normPeriod}`, JSON.stringify(confirmedData));
     } catch {}
   }
 
@@ -164,11 +188,12 @@ export async function loadMonthlyFinancialData(
   userId: string,
   monthYear: string
 ): Promise<{ data: MonthlyFinancialData; source: 'supabase' | 'cloud' | 'cache' }> {
+  const normPeriod = normalizeMonthYear(monthYear);
   try {
     const response = await cloudFetch<{
       data: MonthlyFinancialData;
       source: string;
-    }>(`/api/financial/${monthYear}`);
+    }>(`/api/financial/${normPeriod}`);
 
     if (response && response.data) {
       const serverData = response.data;
@@ -179,7 +204,7 @@ export async function loadMonthlyFinancialData(
       };
 
       try {
-        localStorage.setItem(`fin_local_${userId}_${monthYear}`, JSON.stringify(cleanData));
+        localStorage.setItem(`fin_local_${userId}_${normPeriod}`, JSON.stringify(cleanData));
       } catch {}
 
       return {
@@ -193,7 +218,7 @@ export async function loadMonthlyFinancialData(
 
   // Fallback to local cache only if offline
   try {
-    const cached = localStorage.getItem(`fin_local_${userId}_${monthYear}`);
+    const cached = localStorage.getItem(`fin_local_${userId}_${normPeriod}`);
     if (cached) {
       const parsed = JSON.parse(cached);
       return {
@@ -222,9 +247,10 @@ export async function saveMonthlyFinancialData(
   monthYear: string,
   data: MonthlyFinancialData
 ): Promise<MonthlyFinancialData> {
+  const normPeriod = normalizeMonthYear(monthYear);
   try {
     const res = await cloudFetch<{ data: MonthlyFinancialData; supabaseSynced: boolean }>(
-      `/api/financial/${monthYear}`,
+      `/api/financial/${normPeriod}`,
       {
         method: 'POST',
         body: JSON.stringify({
@@ -237,7 +263,7 @@ export async function saveMonthlyFinancialData(
 
     if (res && res.data) {
       try {
-        localStorage.setItem(`fin_local_${userId}_${monthYear}`, JSON.stringify(res.data));
+        localStorage.setItem(`fin_local_${userId}_${normPeriod}`, JSON.stringify(res.data));
       } catch {}
       return res.data;
     }

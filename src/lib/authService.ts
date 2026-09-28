@@ -17,7 +17,14 @@ const subscribers: Set<AuthSubscriber> = new Set();
 
 export function getAuthToken(): string | null {
   try {
-    return localStorage.getItem(AUTH_TOKEN_KEY);
+    const direct = localStorage.getItem(AUTH_TOKEN_KEY);
+    if (direct) return direct;
+    const raw = localStorage.getItem(ACTIVE_SESSION_KEY);
+    if (raw) {
+      const parsed = JSON.parse(raw);
+      if (parsed && typeof parsed.token === 'string') return parsed.token;
+    }
+    return null;
   } catch {
     return null;
   }
@@ -27,6 +34,14 @@ export function setAuthToken(token: string | null) {
   try {
     if (token) {
       localStorage.setItem(AUTH_TOKEN_KEY, token);
+      const raw = localStorage.getItem(ACTIVE_SESSION_KEY);
+      if (raw) {
+        const parsed = JSON.parse(raw);
+        if (parsed && typeof parsed === 'object') {
+          parsed.token = token;
+          localStorage.setItem(ACTIVE_SESSION_KEY, JSON.stringify(parsed));
+        }
+      }
     } else {
       localStorage.removeItem(AUTH_TOKEN_KEY);
     }
@@ -58,7 +73,8 @@ export function getActiveUser(): AppUser | null {
 // Set active user session
 function setActiveUser(user: AppUser | null, token?: string | null) {
   if (user) {
-    localStorage.setItem(ACTIVE_SESSION_KEY, JSON.stringify(user));
+    const toStore = token ? { ...user, token } : user;
+    localStorage.setItem(ACTIVE_SESSION_KEY, JSON.stringify(toStore));
   } else {
     localStorage.removeItem(ACTIVE_SESSION_KEY);
   }
@@ -84,7 +100,7 @@ async function fetchWithRetry(url: string, init: RequestInit, retries = 2, delay
   try {
     const res = await fetch(url, init);
     // If proxy warmup/502/503 or transient 404 during server restart/warmup, retry once
-    if ((res.status === 502 || res.status === 503 || res.status === 404) && retries > 0) {
+    if ((res.status === 502 || res.status === 503) && retries > 0) {
       await new Promise((r) => setTimeout(r, delayMs));
       return fetchWithRetry(url, init, retries - 1, delayMs * 1.5);
     }
@@ -118,7 +134,7 @@ export async function safeApiCall<T>(
       ...((options.headers as Record<string, string>) || {}),
     };
 
-    if (token && !headers['Authorization']) {
+    if (token && !headers['Authorization'] && !headers['authorization']) {
       headers['Authorization'] = `Bearer ${token}`;
     }
 
@@ -149,14 +165,24 @@ export async function safeApiCall<T>(
         setActiveUser(null, null);
       }
 
-      const defaultFallback =
-        res.status === 404
-          ? 'Serviço de autenticação temporariamente indisponível (404).'
-          : res.status === 429
-          ? 'Muitas tentativas sem sucesso. Aguarde 5 minutos antes de tentar novamente.'
-          : res.status >= 500
-          ? 'Servidor temporariamente indisponível. Tente novamente em instantes.'
-          : `Erro na requisição (${res.status}).`;
+      let defaultFallback = `Erro na requisição (${res.status}).`;
+      if (res.status === 401) {
+        defaultFallback = 'Sessão expirada ou não autorizada (401). Faça login novamente.';
+      } else if (res.status === 403) {
+        defaultFallback = 'Acesso não permitido aos dados deste usuário (403).';
+      } else if (res.status === 404) {
+        if (endpoint.startsWith('/api/financial/')) {
+          defaultFallback = 'Endpoint de dados financeiros não encontrado (404). Verifique a rota e o período.';
+        } else if (endpoint.startsWith('/api/auth/')) {
+          defaultFallback = 'Endpoint de autenticação não encontrado (404).';
+        } else {
+          defaultFallback = 'Recurso da API não encontrado (404).';
+        }
+      } else if (res.status === 429) {
+        defaultFallback = 'Muitas tentativas sem sucesso. Aguarde 5 minutos antes de tentar novamente.';
+      } else if (res.status >= 500) {
+        defaultFallback = 'Servidor temporariamente indisponível (500). Tente novamente em instantes.';
+      }
 
       const errorMessage = extractErrorMessage(parsed, defaultFallback);
       return { success: false, error: errorMessage };
@@ -319,7 +345,7 @@ export async function signInGoogle(options: GoogleAuthOptions | string, provided
       displayName: displayName || targetEmail.split('@')[0],
       provider: 'google',
     };
-    const localToken = `fin_session_${Date.now()}_${Math.random().toString(36).substring(2, 10)}`;
+    const localToken = `fin_session_${localUid}_${Date.now()}_${Math.random().toString(36).substring(2, 10)}`;
     setActiveUser(fallbackUser, localToken);
 
     // Queue background synchronization with server once ready

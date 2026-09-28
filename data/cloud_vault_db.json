@@ -8,7 +8,7 @@
       "passwordHash": "Mud/XYelUh9vVgFHl8DO60nZRfRZSiBoN65vnwpcCI4=",
       "accountSalt": "7pavnsMbaDLAeCrZ1T3CSw==",
       "recoveryPin": "153414",
-      "updatedAt": "2026-09-25T12:59:20.093Z"
+      "updatedAt": "2026-09-28T20:00:02.148Z"
     },
     "usr_d8375f14cf7af854": {
       "userId": "usr_d8375f14cf7af854",
@@ -77,7 +77,18 @@
       "updatedAt": "2026-09-25T12:53:22.633Z"
     }
   },
-  "records": {},
+  "records": {
+    "usr_g_3c194fd4dec0e0af": {
+      "09_2026": {
+        "userId": "usr_g_3c194fd4dec0e0af",
+        "monthYear": "09_2026",
+        "encryptedPayload": "test",
+        "iv": "test",
+        "version": 1,
+        "updatedAt": "2026-09-28T19:57:00.085Z"
+      }
+    }
+  },
   "sessions": {
     "5c5d30433c50e800133b7048de36a34c66a2653a7884f7e6062b2af2b0573178": {
       "token": "5c5d30433c50e800133b7048de36a34c66a2653a7884f7e6062b2af2b0573178",
@@ -186,6 +197,24 @@
       "provider": "google",
       "expiresAt": 1790945960094,
       "createdAt": "2026-09-25T12:59:20.094Z"
+    },
+    "687d487c5522e63f0472555134ba88d0054201c147f2f8fa117e9d7643c96e31": {
+      "token": "687d487c5522e63f0472555134ba88d0054201c147f2f8fa117e9d7643c96e31",
+      "userId": "usr_g_3c194fd4dec0e0af",
+      "email": "elison.silva78.es@gmail.com",
+      "displayName": "elison.silva78.es",
+      "provider": "google",
+      "expiresAt": 1791230121833,
+      "createdAt": "2026-09-28T19:55:21.834Z"
+    },
+    "cd99961e11631bf74819b6a4bafb470ace605ff67fcb23e96f2bb879642d9ce6": {
+      "token": "cd99961e11631bf74819b6a4bafb470ace605ff67fcb23e96f2bb879642d9ce6",
+      "userId": "usr_g_3c194fd4dec0e0af",
+      "email": "elison.silva78.es@gmail.com",
+      "displayName": "elison.silva78.es",
+      "provider": "google",
+      "expiresAt": 1791230402148,
+      "createdAt": "2026-09-28T20:00:02.148Z"
     }
   },
   "financialData": {
@@ -246,13 +275,7 @@
       "09_2026": {
         "rendas": [],
         "despesas": [],
-        "economias": [
-          {
-            "id": 1790346603402,
-            "nome": "Tesouro Selic",
-            "valor": 500
-          }
-        ]
+        "economias": []
       }
     }
   }

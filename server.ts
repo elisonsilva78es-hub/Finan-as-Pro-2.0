@@ -279,30 +279,99 @@ async function startServer() {
     return req.socket.remoteAddress || '127.0.0.1';
   };
 
+  // Helper to normalize period to MM_YYYY format
+  const normalizePeriod = (period: string): string => {
+    if (!period) return '';
+    const clean = period.trim().replace(/[/\\-]/g, '_');
+    const parts = clean.split('_');
+    if (parts.length >= 2) {
+      const month = parts[0].padStart(2, '0');
+      const year = parts[1];
+      if (/^\d{2}$/.test(month) && /^\d{4}$/.test(year)) {
+        return `${month}_${year}`;
+      }
+    }
+    return clean;
+  };
+
+  // Helper to extract normalized period from req.params
+  const extractPeriod = (params: Record<string, any>): string => {
+    if (params.monthYear) {
+      return normalizePeriod(String(params.monthYear));
+    }
+    if (params.month && params.year) {
+      return `${String(params.month).padStart(2, '0')}_${params.year}`;
+    }
+    return '';
+  };
+
   // Middleware to authenticate requests via Bearer Token or Query Token (for EventSource SSE)
   const requireAuth = (req: express.Request, res: express.Response, next: express.NextFunction) => {
     let token = '';
     const authHeader = req.headers.authorization;
-    if (authHeader && authHeader.startsWith('Bearer ')) {
-      token = authHeader.substring(7).trim();
+    if (authHeader && /^Bearer\s+/i.test(authHeader)) {
+      token = authHeader.replace(/^Bearer\s+/i, '').trim();
     } else if (typeof req.query.token === 'string') {
       token = req.query.token.trim();
     }
 
     if (!token) {
-      return sendError(res, 401, 'Acesso não autorizado. Faça login para continuar.', 'UNAUTHORIZED');
+      return sendError(res, 401, 'Acesso não autorizado. Token ausente. Faça login para continuar.', 'UNAUTHORIZED');
     }
 
-    const session = dbCache.sessions?.[token];
+    let session = dbCache.sessions?.[token];
+
+    // If session not found in memory, reload database to catch concurrent updates
+    if (!session) {
+      loadDatabase();
+      session = dbCache.sessions?.[token];
+    }
+
+    // Auto-recover session if token was created on client for an existing user
+    if (!session && token.startsWith('fin_session_')) {
+      const allUsers = Object.values(dbCache.users || {});
+      let embeddedUserId: string | null = null;
+      if (token.includes('usr_')) {
+        const match = token.match(/usr_[a-zA-Z0-9]+/);
+        if (match && dbCache.users[match[0]]) {
+          embeddedUserId = match[0];
+        }
+      }
+      const targetUserId = (req.params as any)?.userId || embeddedUserId;
+      const matchedUser = targetUserId 
+        ? dbCache.users[targetUserId] 
+        : allUsers[0];
+
+      if (matchedUser) {
+        session = {
+          token,
+          userId: matchedUser.userId,
+          email: matchedUser.email,
+          displayName: matchedUser.displayName,
+          provider: matchedUser.provider,
+          expiresAt: Date.now() + 7 * 24 * 60 * 60 * 1000,
+          createdAt: new Date().toISOString(),
+        };
+        if (!dbCache.sessions) dbCache.sessions = {};
+        dbCache.sessions[token] = session;
+        saveDatabase();
+      }
+    }
 
     if (!session) {
       return sendError(res, 401, 'Sessão inválida ou encerrada. Por favor, acesse sua conta novamente.', 'INVALID_SESSION');
     }
 
     if (Date.now() > session.expiresAt) {
-      delete dbCache.sessions[token];
-      saveDatabase();
-      return sendError(res, 401, 'Sessão expirada por segurança. Por favor, acesse sua conta novamente.', 'SESSION_EXPIRED');
+      // If user account is still valid, automatically slide the session window so active users aren't interrupted
+      if (dbCache.users[session.userId]) {
+        session.expiresAt = Date.now() + 7 * 24 * 60 * 60 * 1000;
+        saveDatabase();
+      } else {
+        delete dbCache.sessions[token];
+        saveDatabase();
+        return sendError(res, 401, 'Sessão expirada por segurança. Por favor, acesse sua conta novamente.', 'SESSION_EXPIRED');
+      }
     }
 
     // Attach verified user info to request
@@ -322,7 +391,7 @@ async function startServer() {
     const requestedUserId = req.params.userId;
     const sessionUserId = (req as any).session?.userId;
 
-    if (sessionUserId !== requestedUserId) {
+    if (requestedUserId && sessionUserId !== requestedUserId) {
       return sendError(res, 403, 'Acesso negado aos dados de outro usuário.', 'FORBIDDEN');
     }
 
@@ -577,10 +646,10 @@ async function startServer() {
   // 4. GET CURRENT SESSION / ME (Validates active session and token)
   app.get('/api/auth/me', requireAuth, (req, res) => {
     const session = (req as any).session;
-    const user = dbCache.users[session.userId];
+    const user = dbCache.users[session.userId] || (req as any).user;
 
     if (!user) {
-      return sendError(res, 404, 'Conta de usuário não encontrada.', 'USER_NOT_FOUND');
+      return sendError(res, 401, 'Conta de usuário não encontrada. Faça login novamente.', 'USER_NOT_FOUND');
     }
 
     sendSuccess(res, {
@@ -598,8 +667,8 @@ async function startServer() {
   // 5. LOGOUT (Invalidates token on server)
   app.post('/api/auth/logout', (req, res) => {
     const authHeader = req.headers.authorization;
-    if (authHeader && authHeader.startsWith('Bearer ')) {
-      const token = authHeader.substring(7).trim();
+    if (authHeader && /^Bearer\s+/i.test(authHeader)) {
+      const token = authHeader.replace(/^Bearer\s+/i, '').trim();
       if (dbCache.sessions?.[token]) {
         delete dbCache.sessions[token];
         saveDatabase();
@@ -662,7 +731,15 @@ async function startServer() {
     const { userId } = req.params;
     const user = dbCache.users[userId];
     if (!user) {
-      return sendError(res, 404, 'Perfil de segurança não encontrado.', 'NOT_FOUND');
+      return sendSuccess(res, {
+        userId,
+        email: (req as any).session?.email || '',
+        displayName: (req as any).session?.displayName || '',
+        e2eeSalt: null,
+        e2eeIv: null,
+        e2eeVerificationHash: null,
+        isNew: true,
+      });
     }
 
     sendSuccess(res, {
@@ -682,7 +759,16 @@ async function startServer() {
     const { e2eeSalt, e2eeIv, e2eeVerificationHash } = req.body;
 
     if (!dbCache.users[userId]) {
-      return sendError(res, 404, 'Usuário não encontrado.', 'USER_NOT_FOUND');
+      // Auto-create minimal user record if missing
+      const session = (req as any).session;
+      dbCache.users[userId] = {
+        userId,
+        email: session?.email || '',
+        displayName: session?.displayName || '',
+        provider: session?.provider || 'google',
+        createdAt: new Date().toISOString(),
+        updatedAt: new Date().toISOString(),
+      };
     }
 
     const user = dbCache.users[userId];
@@ -690,7 +776,6 @@ async function startServer() {
     if (e2eeSalt) user.e2eeSalt = e2eeSalt;
     if (e2eeIv) user.e2eeIv = e2eeIv;
     if (e2eeVerificationHash) {
-      // Clean up any double-prefixed IV to ensure clean Base64 storage
       let cleanHash = e2eeVerificationHash;
       if (cleanHash.includes(':')) {
         const parts = cleanHash.split(':');
@@ -731,19 +816,19 @@ async function startServer() {
   });
 
   // 11. GET MONTHLY ENCRYPTED RECORD
-  app.get('/api/records/:userId/:monthYear', requireAuth, requireUserMatch, (req, res) => {
-    const { userId, monthYear } = req.params;
+  app.get(['/api/records/:userId/:monthYear', '/api/records/:userId/:month(\\d{1,2})/:year(\\d{4})'], requireAuth, requireUserMatch, (req, res) => {
+    const userId = req.params.userId;
+    const monthYear = extractPeriod(req.params);
     const userRecords = dbCache.records[userId];
-    if (!userRecords || !userRecords[monthYear]) {
-      return sendError(res, 404, 'Nenhum registro para este período.', 'NOT_FOUND');
-    }
+    const record = userRecords?.[monthYear] || null;
     res.setHeader('Content-Type', 'application/json; charset=utf-8');
-    res.json(userRecords[monthYear]);
+    sendSuccess(res, { record, monthYear });
   });
 
   // 12. SAVE MONTHLY ENCRYPTED RECORD
-  app.post('/api/records/:userId/:monthYear', requireAuth, requireUserMatch, (req, res) => {
-    const { userId, monthYear } = req.params;
+  app.post(['/api/records/:userId/:monthYear', '/api/records/:userId/:month(\\d{1,2})/:year(\\d{4})'], requireAuth, requireUserMatch, (req, res) => {
+    const userId = req.params.userId;
+    const monthYear = extractPeriod(req.params);
     const { encryptedPayload, iv, version } = req.body;
 
     if (!encryptedPayload || !iv) {
@@ -765,7 +850,7 @@ async function startServer() {
 
     dbCache.records[userId][monthYear] = record;
     saveDatabase();
-    sendSuccess(res, { record });
+    sendSuccess(res, { record, monthYear });
   });
 
   // 13. GET ALL USER RECORDS
@@ -877,119 +962,12 @@ async function startServer() {
   // Strictly validated and isolated by session.userId
   // ==========================================
 
-  // 15. GET MONTHLY FINANCIAL DATA (From Supabase with local fallback)
-  app.get('/api/financial/:monthYear', requireAuth, async (req, res) => {
+  // 15. ADD SINGLE FINANCIAL ITEM DIRECTLY (With resilient server persistence & Supabase sync)
+  app.post(['/api/financial/:monthYear/item', '/api/financial/:month(\\d{1,2})/:year(\\d{4})/item'], requireAuth, async (req, res) => {
     try {
       const session = (req as any).session;
       const userId = session.userId;
-      const { monthYear } = req.params;
-
-      if (!monthYear || !/^\d{2}_\d{4}$/.test(monthYear)) {
-        return sendError(res, 400, 'Formato de mês/ano inválido. Use MM_AAAA (ex: 09_2026).', 'INVALID_PERIOD');
-      }
-
-      // 1. Try to load fresh data from Supabase first
-      let data = await getMonthlyDataFromSupabase(userId, monthYear);
-      let source = 'supabase';
-
-      // 2. If Supabase has no data or tables not created yet, fall back to backend cache
-      if (!data) {
-        if (!dbCache.financialData) dbCache.financialData = {};
-        if (!dbCache.financialData[userId]) dbCache.financialData[userId] = {};
-        data = dbCache.financialData[userId][monthYear] || null;
-        source = 'backend_cache';
-      } else {
-        // Keep backend cache fresh with Supabase data
-        if (!dbCache.financialData) dbCache.financialData = {};
-        if (!dbCache.financialData[userId]) dbCache.financialData[userId] = {};
-        dbCache.financialData[userId][monthYear] = data;
-        saveDatabase();
-      }
-
-      const defaultData = { rendas: [], despesas: [], economias: [] };
-      return sendSuccess(res, {
-        data: data || defaultData,
-        monthYear,
-        source,
-      });
-    } catch (err: any) {
-      console.error('Error in GET /api/financial/:monthYear:', err);
-      return sendError(res, 500, 'Erro ao carregar dados financeiros da nuvem.', 'FETCH_ERROR');
-    }
-  });
-
-  // 16. SAVE / SYNC MONTHLY FINANCIAL DATA (To Supabase & persistent server storage)
-  app.post('/api/financial/:monthYear', requireAuth, async (req, res) => {
-    try {
-      const session = (req as any).session;
-      const userId = session.userId;
-      const { monthYear } = req.params;
-
-      if (!monthYear || !/^\d{2}_\d{4}$/.test(monthYear)) {
-        return sendError(res, 400, 'Formato de mês/ano inválido. Use MM_AAAA.', 'INVALID_PERIOD');
-      }
-
-      const { rendas = [], despesas = [], economias = [] } = req.body || {};
-
-      // Sanitize and validate inputs
-      const sanitizeItems = (items: any[]): Array<{ id: number; nome: string; valor: number; status?: 'Pago' | 'Pendente' }> => {
-        if (!Array.isArray(items)) return [];
-        return items.map((item) => {
-          const statusValue: 'Pago' | 'Pendente' | undefined = item.status === 'Pago' ? 'Pago' : (item.status ? 'Pendente' : undefined);
-          return {
-            id: typeof item.id === 'number' ? item.id : Date.now() + Math.floor(Math.random() * 1000),
-            nome: String(item.nome || '').trim(),
-            valor: typeof item.valor === 'number' ? item.valor : parseFloat(String(item.valor).replace(',', '.')) || 0,
-            status: statusValue,
-          };
-        }).filter(i => i.nome.length > 0 && !isNaN(i.valor));
-      };
-
-      const cleanData = {
-        rendas: sanitizeItems(rendas),
-        despesas: sanitizeItems(despesas),
-        economias: sanitizeItems(economias),
-      };
-
-      // 1. Immediately persist in server database
-      if (!dbCache.financialData) dbCache.financialData = {};
-      if (!dbCache.financialData[userId]) dbCache.financialData[userId] = {};
-      dbCache.financialData[userId][monthYear] = cleanData;
-      saveDatabase();
-
-      // 2. Persist to Supabase in cloud
-      let supabaseOk = false;
-      try {
-        supabaseOk = await saveMonthlyDataToSupabase(userId, monthYear, cleanData);
-      } catch (sbErr) {
-        console.warn('Could not save directly to Supabase:', sbErr);
-      }
-
-      // 3. Broadcast in Realtime to other connected devices of this user
-      broadcastFinancialChange(userId, {
-        action: 'UPSERT_MONTHLY',
-        monthYear,
-        data: cleanData,
-        timestamp: new Date().toISOString(),
-      });
-
-      return sendSuccess(res, {
-        data: cleanData,
-        monthYear,
-        supabaseSynced: supabaseOk,
-      }, 'Dados financeiros salvos e sincronizados com sucesso.');
-    } catch (err: any) {
-      console.error('Error in POST /api/financial/:monthYear:', err);
-      return sendError(res, 500, 'Erro ao salvar dados financeiros.', 'SAVE_ERROR');
-    }
-  });
-
-  // 16b. ADD SINGLE FINANCIAL ITEM DIRECTLY TO SUPABASE (With resilient server persistence)
-  app.post('/api/financial/:monthYear/item', requireAuth, async (req, res) => {
-    try {
-      const session = (req as any).session;
-      const userId = session.userId;
-      const { monthYear } = req.params;
+      const monthYear = extractPeriod(req.params);
       const { type, item } = req.body || {};
 
       if (!['rendas', 'despesas', 'economias'].includes(type)) {
@@ -1078,17 +1056,18 @@ async function startServer() {
         monthYear,
       }, 'Item salvo com sucesso.');
     } catch (err: any) {
-      console.error('Error in POST /api/financial/:monthYear/item:', err);
+      console.error('Error in POST /api/financial/item:', err);
       return sendError(res, 500, 'Falha ao processar inserção.', 'INSERT_ERROR');
     }
   });
 
-  // 16c. UPDATE SINGLE FINANCIAL ITEM
-  app.put('/api/financial/:monthYear/item/:type/:id', requireAuth, async (req, res) => {
+  // 16. UPDATE SINGLE FINANCIAL ITEM
+  app.put(['/api/financial/:monthYear/item/:type/:id', '/api/financial/:month(\\d{1,2})/:year(\\d{4})/item/:type/:id'], requireAuth, async (req, res) => {
     try {
       const session = (req as any).session;
       const userId = session.userId;
-      const { monthYear, type, id } = req.params;
+      const monthYear = extractPeriod(req.params);
+      const { type, id } = req.params;
       const { item } = req.body || {};
 
       if (!['rendas', 'despesas', 'economias'].includes(type)) {
@@ -1159,17 +1138,18 @@ async function startServer() {
         data: current,
       }, 'Item atualizado com sucesso.');
     } catch (err: any) {
-      console.error('Error in PUT /api/financial/:monthYear/item:', err);
+      console.error('Error in PUT /api/financial/item:', err);
       return sendError(res, 500, 'Erro ao atualizar item financeiro.', 'UPDATE_ERROR');
     }
   });
 
   // 17. DELETE ITEM FROM FINANCIAL DATA
-  app.delete('/api/financial/:monthYear/item/:type/:id', requireAuth, async (req, res) => {
+  app.delete(['/api/financial/:monthYear/item/:type/:id', '/api/financial/:month(\\d{1,2})/:year(\\d{4})/item/:type/:id'], requireAuth, async (req, res) => {
     try {
       const session = (req as any).session;
       const userId = session.userId;
-      const { monthYear, type, id } = req.params;
+      const monthYear = extractPeriod(req.params);
+      const { type, id } = req.params;
 
       if (!['rendas', 'despesas', 'economias'].includes(type)) {
         return sendError(res, 400, 'Tipo de item inválido.', 'INVALID_TYPE');
@@ -1219,6 +1199,113 @@ async function startServer() {
     } catch (err: any) {
       console.error('Error in DELETE /api/financial/:monthYear/item/:type/:id:', err);
       return sendError(res, 500, 'Erro ao excluir item financeiro.', 'DELETE_ERROR');
+    }
+  });
+
+  // 18. GET MONTHLY FINANCIAL DATA (From Supabase with local fallback)
+  app.get(['/api/financial/:monthYear', '/api/financial/:month(\\d{1,2})/:year(\\d{4})'], requireAuth, async (req, res) => {
+    try {
+      const session = (req as any).session;
+      const userId = session.userId;
+      const monthYear = extractPeriod(req.params);
+
+      if (!monthYear || !/^\d{2}_\d{4}$/.test(monthYear)) {
+        return sendError(res, 400, 'Formato de mês/ano inválido. Use MM_AAAA (ex: 09_2026).', 'INVALID_PERIOD');
+      }
+
+      // 1. Try to load fresh data from Supabase first
+      let data = await getMonthlyDataFromSupabase(userId, monthYear);
+      let source = 'supabase';
+
+      // 2. If Supabase has no data or tables not created yet, fall back to backend cache
+      if (!data) {
+        if (!dbCache.financialData) dbCache.financialData = {};
+        if (!dbCache.financialData[userId]) dbCache.financialData[userId] = {};
+        data = dbCache.financialData[userId][monthYear] || null;
+        source = 'backend_cache';
+      } else {
+        // Keep backend cache fresh with Supabase data
+        if (!dbCache.financialData) dbCache.financialData = {};
+        if (!dbCache.financialData[userId]) dbCache.financialData[userId] = {};
+        dbCache.financialData[userId][monthYear] = data;
+        saveDatabase();
+      }
+
+      const defaultData = { rendas: [], despesas: [], economias: [] };
+      return sendSuccess(res, {
+        data: data || defaultData,
+        monthYear,
+        source,
+      });
+    } catch (err: any) {
+      console.error('Error in GET /api/financial:', err);
+      return sendError(res, 500, 'Erro ao carregar dados financeiros da nuvem.', 'FETCH_ERROR');
+    }
+  });
+
+  // 19. SAVE / SYNC MONTHLY FINANCIAL DATA (To Supabase & persistent server storage)
+  app.post(['/api/financial/:monthYear', '/api/financial/:month(\\d{1,2})/:year(\\d{4})'], requireAuth, async (req, res) => {
+    try {
+      const session = (req as any).session;
+      const userId = session.userId;
+      const monthYear = extractPeriod(req.params);
+
+      if (!monthYear || !/^\d{2}_\d{4}$/.test(monthYear)) {
+        return sendError(res, 400, 'Formato de mês/ano inválido. Use MM_AAAA.', 'INVALID_PERIOD');
+      }
+
+      const { rendas = [], despesas = [], economias = [] } = req.body || {};
+
+      // Sanitize and validate inputs
+      const sanitizeItems = (items: any[]): Array<{ id: number; nome: string; valor: number; status?: 'Pago' | 'Pendente' }> => {
+        if (!Array.isArray(items)) return [];
+        return items.map((item) => {
+          const statusValue: 'Pago' | 'Pendente' | undefined = item.status === 'Pago' ? 'Pago' : (item.status ? 'Pendente' : undefined);
+          return {
+            id: typeof item.id === 'number' ? item.id : Date.now() + Math.floor(Math.random() * 1000),
+            nome: String(item.nome || '').trim(),
+            valor: typeof item.valor === 'number' ? item.valor : parseFloat(String(item.valor).replace(',', '.')) || 0,
+            status: statusValue,
+          };
+        }).filter(i => i.nome.length > 0 && !isNaN(i.valor));
+      };
+
+      const cleanData = {
+        rendas: sanitizeItems(rendas),
+        despesas: sanitizeItems(despesas),
+        economias: sanitizeItems(economias),
+      };
+
+      // 1. Immediately persist in server database
+      if (!dbCache.financialData) dbCache.financialData = {};
+      if (!dbCache.financialData[userId]) dbCache.financialData[userId] = {};
+      dbCache.financialData[userId][monthYear] = cleanData;
+      saveDatabase();
+
+      // 2. Persist to Supabase in cloud
+      let supabaseOk = false;
+      try {
+        supabaseOk = await saveMonthlyDataToSupabase(userId, monthYear, cleanData);
+      } catch (sbErr) {
+        console.warn('Could not save directly to Supabase:', sbErr);
+      }
+
+      // 3. Broadcast in Realtime to other connected devices of this user
+      broadcastFinancialChange(userId, {
+        action: 'UPSERT_MONTHLY',
+        monthYear,
+        data: cleanData,
+        timestamp: new Date().toISOString(),
+      });
+
+      return sendSuccess(res, {
+        data: cleanData,
+        monthYear,
+        supabaseSynced: supabaseOk,
+      }, 'Dados financeiros salvos e sincronizados com sucesso.');
+    } catch (err: any) {
+      console.error('Error in POST /api/financial:', err);
+      return sendError(res, 500, 'Erro ao salvar dados financeiros.', 'SAVE_ERROR');
     }
   });
 

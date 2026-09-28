@@ -163,12 +163,12 @@ export function extractErrorMessage(err: unknown, fallback = 'Ocorreu um erro ao
 
     // If HTTP status is provided
     if (typeof obj.status === 'number') {
-      if (obj.status === 401) return 'E-mail ou senha incorretos.';
-      if (obj.status === 403) return 'Acesso negado.';
-      if (obj.status === 404) return 'Recurso não encontrado.';
-      if (obj.status === 409) return 'Este e-mail já está cadastrado.';
+      if (obj.status === 401) return 'Sessão expirada ou acesso não autorizado (401). Faça login novamente.';
+      if (obj.status === 403) return 'Acesso negado aos dados solicitados (403).';
+      if (obj.status === 404) return 'Recurso ou rota não encontrada (404).';
+      if (obj.status === 409) return 'Este registro ou e-mail já existe.';
       if (obj.status === 429) return 'Muitas tentativas sem sucesso. Aguarde 5 minutos.';
-      if (obj.status >= 500) return 'Servidor temporariamente indisponível. Tente novamente.';
+      if (obj.status >= 500) return 'Servidor temporariamente indisponível (500). Tente novamente.';
     }
   }
 
